@@ -44,7 +44,8 @@ enum PlayerPage {
     pointer-events: none;
   }
   #shortcuts.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
-  #shortcuts .row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+  #shortcuts .row { display: flex; flex-wrap: nowrap; gap: 8px; justify-content: center; }
+  .chip span, .readout { white-space: nowrap; }
   .chip {
     display: inline-flex; align-items: center; gap: 8px;
     height: 38px; box-sizing: border-box;
@@ -69,6 +70,16 @@ enum PlayerPage {
     padding: 0 12px; font-size: 13px; line-height: 1; min-width: 48px; color: #ddd;
     background: rgba(20,20,22,0.55); border-radius: 999px;
     border: 1px solid rgba(255,255,255,0.10); backdrop-filter: blur(8px);
+  }
+  /* Keep each row on one line by shrinking the chips on narrow screens. */
+  @media (max-width: 430px) {
+    #shortcuts { gap: 6px; padding: 6px; }
+    .chip { height: 34px; gap: 6px; padding: 0 10px 0 6px; font-size: 12px; }
+    .chip kbd { min-width: 20px; height: 20px; }
+    .readout { height: 34px; padding: 0 8px; min-width: 42px; font-size: 12px; }
+  }
+  @media (max-width: 340px) {
+    .chip span { display: none; }
   }
 </style>
 </head>
@@ -235,7 +246,7 @@ enum PlayerPage {
     ws.onopen = () => {
       setStatus('Connected. Waiting for video...');
       setPill('connected');
-      dbg('ws open; player=v9-shortcuts; UA=' + navigator.userAgent);
+      dbg('ws open; player=v10-shortcuts; UA=' + navigator.userAgent);
     };
 
     ws.onmessage = (ev) => {
