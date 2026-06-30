@@ -35,6 +35,7 @@ final class StreamConfig: ObservableObject {
         static let showsCursor = "showsCursor"
         static let password = "password"
         static let allowRemoteControl = "allowRemoteControl"
+        static let includePasswordInQR = "includePasswordInQR"
     }
 
     private let defaults = UserDefaults.standard
@@ -73,6 +74,10 @@ final class StreamConfig: ObservableObject {
     /// Each request is still individually approved by the host.
     @Published var allowRemoteControl: Bool { didSet { defaults.set(allowRemoteControl, forKey: Keys.allowRemoteControl) } }
 
+    /// Whether the scan-to-connect QR code embeds the password (?token=). When
+    /// off, scanning opens the stream and the viewer is prompted for the password.
+    @Published var includePasswordInQR: Bool { didSet { defaults.set(includePasswordInQR, forKey: Keys.includePasswordInQR) } }
+
     init() {
         let d = UserDefaults.standard
         port = (d.object(forKey: Keys.port) as? Int) ?? 8080
@@ -86,6 +91,23 @@ final class StreamConfig: ObservableObject {
         showsCursor = (d.object(forKey: Keys.showsCursor) as? Bool) ?? true
         password = d.string(forKey: Keys.password) ?? ""
         allowRemoteControl = (d.object(forKey: Keys.allowRemoteControl) as? Bool) ?? true
+        includePasswordInQR = (d.object(forKey: Keys.includePasswordInQR) as? Bool) ?? true
+    }
+
+    /// Builds the viewer URL for the given LAN address.
+    /// - Parameter includeToken: when false, the password is omitted even if set.
+    func streamURL(ip: String, includeToken: Bool = true) -> String {
+        var url = "http://\(ip):\(port)"
+        if includeToken, !password.isEmpty {
+            let encoded = password.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? password
+            url += "/?token=\(encoded)"
+        }
+        return url
+    }
+
+    /// The URL encoded into the QR code (respects `includePasswordInQR`).
+    func qrURL(ip: String) -> String {
+        streamURL(ip: ip, includeToken: includePasswordInQR)
     }
 
     /// Segment interval as seconds for AVFoundation APIs.

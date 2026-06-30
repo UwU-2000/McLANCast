@@ -48,8 +48,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(
             forName: .lanCastForgetControlApprovals, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.approvals.forgetAll()
+            // The store is mutated by Settings; here we only drop the live controller.
             self?.server.revokeControl(reason: "Approvals were cleared on the host.")
+        }
+        NotificationCenter.default.addObserver(
+            forName: .lanCastRevokeControlApproval, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let clientId = note.userInfo?["clientId"] as? String else { return }
+            self?.server.revokeControl(clientId: clientId,
+                                       reason: "Your access was revoked on the host.")
         }
     }
 
@@ -131,11 +138,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var streamURL: String? {
         guard let ip = StreamServer.localIPv4Address() else { return nil }
-        var url = "http://\(ip):\(config.port)"
-        if !config.password.isEmpty {
-            url += "/?token=\(config.password.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? config.password)"
-        }
-        return url
+        return config.streamURL(ip: ip)
+    }
+
+    /// URL encoded into the QR code (may omit the password per settings).
+    private var qrURLString: String? {
+        guard let ip = StreamServer.localIPv4Address() else { return nil }
+        return config.qrURL(ip: ip)
     }
 
     // MARK: - Menu
@@ -168,6 +177,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let copy = NSMenuItem(title: "Copy URL", action: #selector(copyURL), keyEquivalent: "c")
             copy.target = self
             menu.addItem(copy)
+
+            let qr = NSMenuItem(title: "Show QR Code…", action: #selector(showQRCode), keyEquivalent: "")
+            qr.target = self
+            menu.addItem(qr)
 
             let stop = NSMenuItem(title: "Stop Streaming", action: #selector(toggleStreaming), keyEquivalent: "s")
             stop.target = self
@@ -220,6 +233,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.open(u)
     }
 
+    @objc private func showQRCode() {
+        if qrWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 300, height: 360),
+                styleMask: [.titled, .closable],
+                backing: .buffered, defer: false
+            )
+            window.title = "LANCast — Scan to Connect"
+            window.isReleasedWhenClosed = false
+            window.center()
+            window.contentViewController = NSHostingController(rootView: QRCodeView(config: config))
+            qrWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        qrWindow?.makeKeyAndOrderFront(nil)
+    }
+
     @objc private func requestPermission() {
         // Triggers the system Screen Recording prompt if not yet granted.
         if !CGPreflightScreenCaptureAccess() {
@@ -264,9 +294,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
+        let device = request.name.isEmpty ? "A viewer" : "“\(request.name)”"
         let alert = NSAlert()
         alert.messageText = "Allow remote control?"
-        alert.informativeText = "A viewer at \(request.ip) wants to control this Mac's mouse and keyboard."
+        alert.informativeText = "\(device) at \(request.ip) wants to control this Mac's mouse and keyboard."
         alert.addButton(withTitle: "Allow")
         alert.addButton(withTitle: "Deny")
 
@@ -285,7 +316,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
             let expiry = expiries[min(popup.indexOfSelectedItem, expiries.count - 1)]
-            approvals.approve(request.clientId, expiry: expiry)
+            approvals.approve(request.clientId, name: request.name, expiry: expiry)
             input.displayID = config.displayID
             server.grantControl(request)
         } else {

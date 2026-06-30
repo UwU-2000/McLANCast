@@ -22,9 +22,14 @@ final class StreamServer {
 
     // Per-connection metadata.
     private var clientIds: [ObjectIdentifier: String] = [:]
+    private var clientNames: [ObjectIdentifier: String] = [:]
     private var remoteIPs: [ObjectIdentifier: String] = [:]
     private var viewOnly: [ObjectIdentifier: Bool] = [:]
     private var lastPong: [ObjectIdentifier: Date] = [:]
+    /// Connections that have passed the password gate (always true when no
+    /// password is configured). Only authed connections receive the stream and
+    /// count as viewers.
+    private var authed: Set<ObjectIdentifier> = []
 
     // Single active controller (only one client controls the host at a time).
     private var activeControllerOID: ObjectIdentifier?
@@ -60,13 +65,14 @@ final class StreamServer {
     /// Opaque handle describing a pending control request.
     struct ControlRequest {
         let clientId: String
+        let name: String
         let ip: String
         fileprivate let oid: ObjectIdentifier
     }
 
-    /// Number of currently connected viewers.
+    /// Number of currently connected viewers (authenticated only).
     var viewerCount: Int {
-        queue.sync { clients.count }
+        queue.sync { authed.count }
     }
 
     // MARK: - Lifecycle
@@ -110,9 +116,11 @@ final class StreamServer {
             httpBuffers.removeAll()
             wsBuffers.removeAll()
             clientIds.removeAll()
+            clientNames.removeAll()
             remoteIPs.removeAll()
             viewOnly.removeAll()
             lastPong.removeAll()
+            authed.removeAll()
             activeControllerOID = nil
             activeControllerClientId = nil
             cachedInitMime = nil
@@ -156,7 +164,7 @@ final class StreamServer {
             guard let self else { return }
             self.cachedInitMime = mime
             self.cachedInitSegment = segment
-            for (_, c) in self.clients {
+            for (oid, c) in self.clients where self.authed.contains(oid) {
                 self.sendInit(to: c, mime: mime, segment: segment)
             }
         }
@@ -167,7 +175,7 @@ final class StreamServer {
         queue.async { [weak self] in
             guard let self else { return }
             let frame = Self.wsFrame(opcode: 0x2, payload: data)
-            for (_, c) in self.clients {
+            for (oid, c) in self.clients where self.authed.contains(oid) {
                 c.send(content: frame, completion: .contentProcessed { _ in })
             }
         }
@@ -198,9 +206,11 @@ final class StreamServer {
         httpBuffers[oid] = nil
         wsBuffers[oid] = nil
         clientIds[oid] = nil
+        clientNames[oid] = nil
         remoteIPs[oid] = nil
         viewOnly[oid] = nil
         lastPong[oid] = nil
+        authed.remove(oid)
         if oid == activeControllerOID {
             activeControllerOID = nil
             activeControllerClientId = nil
@@ -210,7 +220,7 @@ final class StreamServer {
     }
 
     private func notifyViewerCount() {
-        let count = clients.count
+        let count = authed.count
         DispatchQueue.main.async { [weak self] in self?.onViewerCountChanged?(count) }
     }
 
@@ -264,19 +274,14 @@ final class StreamServer {
 
         let (path, query) = splitQuery(rawPath)
 
-        // Auth check (only when a password is configured).
-        if !password.isEmpty, tokenFromQuery(query) != password {
-            sendHTTP(connection, status: "401 Unauthorized",
-                     contentType: "text/plain; charset=utf-8",
-                     body: Data("Unauthorized. Append ?token=YOUR_PASSWORD to the URL.".utf8),
-                     close: true)
-            return
-        }
-
+        // The player page itself is not sensitive, so it is served openly; the
+        // password gate is enforced on the WebSocket (the actual stream). This
+        // lets the page render a password prompt when no/incorrect token is set.
         let isWebSocket = (headers["upgrade"]?.lowercased().contains("websocket") ?? false)
 
         if isWebSocket && (path == "/ws") {
-            upgradeToWebSocket(connection, key: headers["sec-websocket-key"])
+            let tokenOK = password.isEmpty || (tokenFromQuery(query) == password)
+            upgradeToWebSocket(connection, key: headers["sec-websocket-key"], authed: tokenOK)
             return
         }
 
@@ -298,7 +303,7 @@ final class StreamServer {
 
     // MARK: - WebSocket
 
-    private func upgradeToWebSocket(_ connection: NWConnection, key: String?) {
+    private func upgradeToWebSocket(_ connection: NWConnection, key: String?, authed isAuthed: Bool) {
         guard let key else { connection.cancel(); return }
         let accept = Self.acceptKey(for: key)
         let response = """
@@ -318,10 +323,17 @@ final class StreamServer {
             self.remoteIPs[oid] = ip
             self.viewOnly[oid] = Self.isLocalAddress(ip)
             let haveInit = self.cachedInitMime != nil
-            Log.log("WebSocket client connected (total \(self.clients.count)), ip=\(ip), viewOnly=\(self.viewOnly[oid] ?? false), cachedInit=\(haveInit)")
-            self.notifyViewerCount()
-            if let mime = self.cachedInitMime, let seg = self.cachedInitSegment {
-                self.sendInit(to: connection, mime: mime, segment: seg)
+            Log.log("WebSocket client connected (total \(self.clients.count)), ip=\(ip), authed=\(isAuthed), viewOnly=\(self.viewOnly[oid] ?? false), cachedInit=\(haveInit)")
+            if isAuthed {
+                self.authed.insert(oid)
+                self.notifyViewerCount()
+                if let mime = self.cachedInitMime, let seg = self.cachedInitSegment {
+                    self.sendInit(to: connection, mime: mime, segment: seg)
+                }
+            } else {
+                // Hold the connection open but withhold the stream until the
+                // viewer supplies the correct password over the socket.
+                self.sendJSON(["type": "auth", "state": "required"], to: connection)
             }
             self.receiveWS(connection)
         })
@@ -430,28 +442,52 @@ final class StreamServer {
             return
         }
 
+        // The "auth" reply is the only message accepted from an unauthenticated
+        // connection (besides identity/diagnostics which are harmless to record).
         switch type {
         case "log":
             if let msg = obj["msg"] as? String { Log.log("client: \(msg)") }
 
         case "hello":
-            let clientId = (obj["clientId"] as? String) ?? ""
-            clientIds[oid] = clientId
-            sendControlAvailability(to: connection)
+            clientIds[oid] = (obj["clientId"] as? String) ?? ""
+            if let name = obj["name"] as? String, !name.isEmpty { clientNames[oid] = name }
+            if authed.contains(oid) { sendControlAvailability(to: connection) }
+
+        case "auth":
+            handleAuth(oid: oid, connection: connection, token: obj["token"] as? String ?? "")
 
         case "control-request":
+            guard authed.contains(oid) else { return }
             handleControlRequest(oid: oid, connection: connection)
 
         case "control-release":
+            guard authed.contains(oid) else { return }
             if oid == activeControllerOID { clearActiveController() }
 
         case "input":
-            guard oid == activeControllerOID, let event = Self.parseInput(obj) else { return }
+            guard authed.contains(oid), oid == activeControllerOID,
+                  let event = Self.parseInput(obj) else { return }
             onInput?(event)
 
         default:
             break
         }
+    }
+
+    private func handleAuth(oid: ObjectIdentifier, connection: NWConnection, token: String) {
+        if authed.contains(oid) { return }
+        guard !password.isEmpty, token == password else {
+            sendJSON(["type": "auth", "state": "bad"], to: connection)
+            return
+        }
+        authed.insert(oid)
+        sendJSON(["type": "auth", "state": "ok"], to: connection)
+        notifyViewerCount()
+        if let mime = cachedInitMime, let seg = cachedInitSegment {
+            sendInit(to: connection, mime: mime, segment: seg)
+        }
+        // A hello may have arrived before auth; surface control availability now.
+        sendControlAvailability(to: connection)
     }
 
     private func sendControlAvailability(to connection: NWConnection) {
@@ -482,7 +518,8 @@ final class StreamServer {
             sendJSON(["type": "control", "state": "busy"], to: connection)
             return
         }
-        let request = ControlRequest(clientId: clientId, ip: remoteIPs[oid] ?? "", oid: oid)
+        let request = ControlRequest(clientId: clientId, name: clientNames[oid] ?? "",
+                                     ip: remoteIPs[oid] ?? "", oid: oid)
         DispatchQueue.main.async { [weak self] in self?.onControlRequest?(request) }
     }
 
@@ -522,6 +559,18 @@ final class StreamServer {
     func revokeControl(reason: String) {
         queue.async { [weak self] in
             guard let self else { return }
+            if let oid = self.activeControllerOID, let c = self.clients[oid] {
+                self.sendJSON(["type": "control", "state": "revoked", "reason": reason], to: c)
+            }
+            self.activeControllerOID = nil
+            self.activeControllerClientId = nil
+        }
+    }
+
+    /// Revokes the active controller only if it is the given client.
+    func revokeControl(clientId: String, reason: String) {
+        queue.async { [weak self] in
+            guard let self, self.activeControllerClientId == clientId else { return }
             if let oid = self.activeControllerOID, let c = self.clients[oid] {
                 self.sendJSON(["type": "control", "state": "revoked", "reason": reason], to: c)
             }

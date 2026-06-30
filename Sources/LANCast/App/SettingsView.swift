@@ -3,15 +3,19 @@ import SwiftUI
 extension Notification.Name {
     /// Posted from settings to forget all stored control approvals.
     static let lanCastForgetControlApprovals = Notification.Name("LANCastForgetControlApprovals")
+    /// Posted from settings to revoke a single device's approval. userInfo: ["clientId": String].
+    static let lanCastRevokeControlApproval = Notification.Name("LANCastRevokeControlApproval")
 }
 
 /// Settings UI bound to `StreamConfig`. Changes are persisted immediately and
 /// take effect the next time streaming is started.
 struct SettingsView: View {
     @ObservedObject var config: StreamConfig
+    let approvals: ApprovalStore
 
     @State private var displays: [DisplayInfo] = []
     @State private var loadError: String?
+    @State private var approvedDevices: [ApprovedDevice] = []
 
     var body: some View {
         Form {
@@ -30,9 +34,17 @@ struct SettingsView: View {
                         .frame(width: 160)
                         .multilineTextAlignment(.trailing)
                 }
-                Text("Leave the password empty for open access on your LAN. With a password, viewers must use the generated URL containing ?token=.")
+                Text("Leave the password empty for open access on your LAN. With a password, viewers either use a URL containing ?token= or are prompted for it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Scan to connect") {
+                HStack {
+                    Spacer()
+                    QRCodeView(config: config)
+                    Spacer()
+                }
             }
 
             Section("Display") {
@@ -102,8 +114,30 @@ struct SettingsView: View {
                 Text("When enabled, a viewer can ask to control this Mac's mouse and keyboard. Each request must be approved here on the host, and a browser on this same Mac is always view-only. Requires Accessibility permission.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("Forget approved controllers") {
-                    NotificationCenter.default.post(name: .lanCastForgetControlApprovals, object: nil)
+            }
+
+            Section("Approved devices") {
+                if approvedDevices.isEmpty {
+                    Text("No approved devices.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(approvedDevices) { device in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(device.name).lineLimit(1)
+                                Text(device.expiryLabel)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Revoke") { revoke(device) }
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                    Button("Revoke all") { revokeAll() }
+                        .foregroundStyle(.red)
                 }
             }
 
@@ -114,6 +148,28 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 460, height: 540)
         .task { await loadDisplays() }
+        .onAppear { refreshDevices() }
+        .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
+            refreshDevices()
+        }
+    }
+
+    private func refreshDevices() {
+        approvedDevices = approvals.approvedDevices()
+    }
+
+    private func revoke(_ device: ApprovedDevice) {
+        approvals.revoke(device.clientId)
+        NotificationCenter.default.post(name: .lanCastRevokeControlApproval,
+                                        object: nil,
+                                        userInfo: ["clientId": device.clientId])
+        refreshDevices()
+    }
+
+    private func revokeAll() {
+        approvals.forgetAll()
+        NotificationCenter.default.post(name: .lanCastForgetControlApprovals, object: nil)
+        refreshDevices()
     }
 
     private func loadDisplays() async {

@@ -164,6 +164,42 @@ enum PlayerPage {
   #leftClickBtn { left: 16px; }
   #rightClickBtn { right: 16px; }
   body.controlling .clickbtn { display: inline-flex; }
+
+  /* Device nickname field in the connect overlay. */
+  #nameRow { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  #nickInput {
+    height: 34px; box-sizing: border-box; width: 220px; max-width: 80vw;
+    border-radius: 8px; border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.08); color: #fff; padding: 0 12px; font-size: 14px;
+    text-align: center;
+  }
+  #nickInput::placeholder { color: rgba(255,255,255,0.45); }
+
+  /* Password prompt modal (shown when a token is required but missing/wrong). */
+  #pwModal {
+    position: fixed; inset: 0; z-index: 20; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.72); padding: 24px;
+  }
+  #pwModal.show { display: flex; }
+  #pwModal .card {
+    background: #1b1b1f; border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 14px; padding: 22px; width: min(92vw, 340px);
+    display: flex; flex-direction: column; gap: 12px; text-align: center;
+  }
+  #pwModal h2 { margin: 0; font-size: 17px; font-weight: 600; }
+  #pwModal p { margin: 0; font-size: 13px; opacity: .7; }
+  #pwInput {
+    height: 42px; box-sizing: border-box; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.18); background: rgba(255,255,255,0.08);
+    color: #fff; padding: 0 12px; font-size: 16px; text-align: center;
+  }
+  #pwSubmit {
+    height: 42px; border-radius: 8px; border: 0; cursor: pointer;
+    background: #1565c0; color: #fff; font-size: 15px; font-weight: 600;
+  }
+  #pwSubmit:active { transform: scale(0.98); }
+  #pwError { color: #ff6b6b; font-size: 12px; min-height: 14px; }
 </style>
 </head>
 <body>
@@ -173,6 +209,20 @@ enum PlayerPage {
     <div id="title">LANCast</div>
     <div id="status">Connecting to stream...</div>
     <div id="hint">Tap / click anywhere to start and unmute audio</div>
+    <div id="nameRow">
+      <input id="nickInput" placeholder="Nickname (1 word)" maxlength="20"
+             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    </div>
+  </div>
+  <div id="pwModal">
+    <div class="card">
+      <h2>Password required</h2>
+      <p>This stream is password-protected.</p>
+      <input id="pwInput" type="password" placeholder="Enter password"
+             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+      <div id="pwError"></div>
+      <button id="pwSubmit">Connect</button>
+    </div>
   </div>
   <div id="shortcuts" aria-label="Playback shortcuts">
     <div class="row">
@@ -238,12 +288,126 @@ enum PlayerPage {
     } catch (e) { return String(Date.now()); }
   })();
 
+  // Auth token: seeded from the URL, then updated if the viewer types a
+  // password into the modal. Reused on reconnects so the prompt isn't repeated.
+  let authToken = (new URLSearchParams(location.search).get('token')) || '';
   function wsURL() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const token = new URLSearchParams(location.search).get('token');
     let u = `${proto}://${location.host}/ws`;
-    if (token) u += `?token=${encodeURIComponent(token)}`;
+    if (authToken) u += `?token=${encodeURIComponent(authToken)}`;
     return u;
+  }
+
+  // ---- Device identity (name shown to the host on control requests) ----
+  // Browsers cannot read the OS username or device serial, so we combine an
+  // optional 1-word nickname with an auto-detected model/OS/browser label.
+  let nickname = '';
+  try { nickname = (localStorage.getItem('lancastNick') || '').trim().split(/\s+/)[0] || ''; } catch (e) {}
+  let deviceAuto = (navigator.platform || 'browser');
+
+  // A small map of common Android model codes to marketing names. It can't be
+  // exhaustive; unknown codes fall back to the raw model code.
+  const MODEL_MAP = {
+    'SM-S918B': 'Galaxy S23 Ultra', 'SM-S918U': 'Galaxy S23 Ultra', 'SM-S918U1': 'Galaxy S23 Ultra',
+    'SM-S911B': 'Galaxy S23', 'SM-S916B': 'Galaxy S23+',
+    'SM-S928B': 'Galaxy S24 Ultra', 'SM-S921B': 'Galaxy S24', 'SM-S926B': 'Galaxy S24+',
+    'SM-S908B': 'Galaxy S22 Ultra', 'SM-S901B': 'Galaxy S22',
+    'SM-F946B': 'Galaxy Z Fold5', 'SM-F731B': 'Galaxy Z Flip5',
+    'Pixel 6': 'Pixel 6', 'Pixel 7': 'Pixel 7', 'Pixel 7 Pro': 'Pixel 7 Pro',
+    'Pixel 8': 'Pixel 8', 'Pixel 8 Pro': 'Pixel 8 Pro', 'Pixel 9': 'Pixel 9', 'Pixel 9 Pro': 'Pixel 9 Pro'
+  };
+
+  function detectBrowser(ua) {
+    if (/edg\//i.test(ua)) return 'Edge';
+    if (/opr\/|opera/i.test(ua)) return 'Opera';
+    if (/(chrome|crios)/i.test(ua)) return 'Chrome';
+    if (/(firefox|fxios)/i.test(ua)) return 'Firefox';
+    if (/safari/i.test(ua)) return 'Safari';
+    return 'Browser';
+  }
+
+  async function detectDevice() {
+    const ua = navigator.userAgent || '';
+    let model = '', platform = '';
+    try {
+      const uad = navigator.userAgentData;
+      if (uad) {
+        platform = uad.platform || '';
+        if (uad.getHighEntropyValues) {
+          const h = await uad.getHighEntropyValues(['model', 'platform']);
+          model = (h.model || '').trim();
+          platform = h.platform || platform;
+        }
+      }
+    } catch (e) {}
+    if (!model && /android/i.test(ua)) {
+      const m = ua.match(/;\s*([^;)]+?)\s+Build\//) || ua.match(/Android[^;]*;\s*([^;)]+)\)/);
+      if (m) model = m[1].trim();
+    }
+    if (!platform) {
+      if (/android/i.test(ua)) platform = 'Android';
+      else if (/iphone|ipad|ipod/i.test(ua)) platform = 'iOS';
+      else if (/mac/i.test(ua)) platform = 'macOS';
+      else if (/windows/i.test(ua)) platform = 'Windows';
+      else if (/linux/i.test(ua)) platform = 'Linux';
+    }
+    const friendly = MODEL_MAP[model] || model;
+    if (friendly) deviceAuto = friendly + (platform ? ' \u00b7 ' + platform : '');
+    else deviceAuto = detectBrowser(ua) + (platform ? ' on ' + platform : '');
+  }
+
+  function currentName() { return nickname ? (nickname + ' ' + deviceAuto) : deviceAuto; }
+  function sendHello() {
+    if (socket && socket.readyState === 1) {
+      sendCtl({ type: 'hello', clientId: clientId, name: currentName() });
+    }
+  }
+  // Resolve the auto label, then refresh the host's record.
+  detectDevice().then(sendHello).catch(() => {});
+
+  // ---- Nickname field (connect overlay) ----
+  const nickInput = document.getElementById('nickInput');
+  nickInput.value = nickname;
+  function applyNickname() {
+    nickname = (nickInput.value || '').trim().split(/\s+/)[0] || '';
+    nickInput.value = nickname;
+    try { localStorage.setItem('lancastNick', nickname); } catch (e) {}
+    sendHello();
+  }
+  ['click', 'mousedown', 'touchstart'].forEach((ev) =>
+    nickInput.addEventListener(ev, (e) => e.stopPropagation(), { passive: true }));
+  nickInput.addEventListener('change', applyNickname);
+  nickInput.addEventListener('blur', applyNickname);
+
+  // ---- Password modal ----
+  const pwModal = document.getElementById('pwModal');
+  const pwInput = document.getElementById('pwInput');
+  const pwError = document.getElementById('pwError');
+  const pwSubmit = document.getElementById('pwSubmit');
+
+  function showPw(err) {
+    pwError.textContent = err || '';
+    pwModal.classList.add('show');
+    setTimeout(() => pwInput.focus(), 50);
+  }
+  function hidePw() { pwModal.classList.remove('show'); }
+  function submitPw() {
+    const val = pwInput.value;
+    if (!val) { pwError.textContent = 'Enter a password.'; return; }
+    authToken = val;
+    pwError.textContent = '';
+    if (socket && socket.readyState === 1) sendCtl({ type: 'auth', token: val });
+    else connect();
+  }
+  pwModal.addEventListener('mousedown', (e) => e.stopPropagation());
+  pwModal.addEventListener('click', (e) => e.stopPropagation());
+  pwSubmit.addEventListener('click', (e) => { e.stopPropagation(); submitPw(); });
+  pwInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submitPw(); } });
+
+  function handleAuth(msg) {
+    if (msg.state === 'ok') { hidePw(); setStatus('Connected. Waiting for video...'); return; }
+    if (msg.state === 'bad') { showPw('Wrong password. Try again.'); pwInput.select(); return; }
+    if (msg.state === 'required') { setStatus('Password required'); showPw(''); }
   }
 
   function resetMSE() {
@@ -357,14 +521,15 @@ enum PlayerPage {
     ws.onopen = () => {
       setStatus('Connected. Waiting for video...');
       setPill('connected');
-      dbg('ws open; player=v16-kb-layout; UA=' + navigator.userAgent);
-      sendCtl({ type: 'hello', clientId: clientId, name: (navigator.platform || 'browser') });
+      dbg('ws open; player=v17-qr-auth-name; UA=' + navigator.userAgent);
+      sendHello();
     };
 
     ws.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
         let msg;
         try { msg = JSON.parse(ev.data); } catch (e) { return; }
+        if (msg.type === 'auth') { handleAuth(msg); return; }
         if (msg.type === 'control') { handleControl(msg); return; }
         if (msg.type === 'init' && msg.mime) {
           mime = msg.mime;
