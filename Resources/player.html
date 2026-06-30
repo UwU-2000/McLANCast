@@ -1,0 +1,180 @@
+<!doctype html>
+<!--
+  Reference copy of the browser player. The source of truth used at runtime is
+  Sources/LANCast/Server/PlayerPage.swift (embedded so it ships in the binary).
+  Keep this file in sync when editing the player.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LANCast</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #000; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: #e6e6e6; overflow: hidden;
+  }
+  video { max-width: 100vw; max-height: 100vh; width: auto; height: auto; background: #000; }
+  #overlay {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px;
+    background: rgba(0,0,0,0.55); text-align: center; padding: 24px;
+    transition: opacity .25s ease; cursor: pointer;
+  }
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+  #title { font-size: 22px; font-weight: 600; letter-spacing: .3px; }
+  #status { font-size: 14px; opacity: .8; max-width: 80vw; }
+  #hint { font-size: 13px; opacity: .6; }
+  .pill {
+    position: fixed; top: 12px; right: 12px; z-index: 5;
+    background: rgba(20,20,22,0.7); border: 1px solid rgba(255,255,255,.12);
+    border-radius: 999px; padding: 6px 12px; font-size: 12px; opacity: .85;
+    backdrop-filter: blur(8px);
+  }
+</style>
+</head>
+<body>
+  <video id="v" autoplay playsinline muted></video>
+  <div class="pill" id="pill">connecting…</div>
+  <div id="overlay">
+    <div id="title">LANCast</div>
+    <div id="status">Connecting to stream…</div>
+    <div id="hint">Tap / click anywhere to start and unmute audio</div>
+  </div>
+
+<script>
+(function () {
+  const v = document.getElementById('v');
+  const overlay = document.getElementById('overlay');
+  const statusEl = document.getElementById('status');
+  const pill = document.getElementById('pill');
+
+  const MAX_LATENCY = 1.5;
+  const KEEP_SECONDS = 8;
+
+  let ms = null, sb = null, mime = null;
+  let queue = [];
+  let initAppended = false;
+
+  function setStatus(t) { statusEl.textContent = t; }
+  function setPill(t) { pill.textContent = t; }
+
+  function wsURL() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const token = new URLSearchParams(location.search).get('token');
+    let u = `${proto}://${location.host}/ws`;
+    if (token) u += `?token=${encodeURIComponent(token)}`;
+    return u;
+  }
+
+  function resetMSE() {
+    queue = [];
+    initAppended = false;
+    sb = null;
+    try { if (v.src) URL.revokeObjectURL(v.src); } catch (e) {}
+    ms = new MediaSource();
+    v.src = URL.createObjectURL(ms);
+    ms.addEventListener('sourceopen', onSourceOpen, { once: true });
+  }
+
+  function onSourceOpen() {
+    if (!mime) return;
+    try {
+      sb = ms.addSourceBuffer(mime);
+    } catch (e) {
+      setStatus('This browser cannot play the stream codec:\n' + mime);
+      return;
+    }
+    sb.mode = 'sequence';
+    sb.addEventListener('updateend', () => { trim(); pump(); seekLive(); });
+    sb.addEventListener('error', () => setStatus('Media buffer error.'));
+    pump();
+  }
+
+  function pump() {
+    if (!sb || sb.updating || queue.length === 0) return;
+    const chunk = queue.shift();
+    try {
+      sb.appendBuffer(chunk);
+    } catch (e) {
+      if (e && e.name === 'QuotaExceededError') {
+        queue.unshift(chunk);
+        trim(true);
+      } else {
+        setStatus('Append error: ' + (e && e.message ? e.message : e));
+      }
+    }
+  }
+
+  function trim(force) {
+    if (!sb || sb.updating || v.buffered.length === 0) return;
+    const start = v.buffered.start(0);
+    const end = v.buffered.end(v.buffered.length - 1);
+    const target = force ? Math.max(start, end - 2) : (end - KEEP_SECONDS);
+    if (target > start) {
+      try { sb.remove(start, target); } catch (e) {}
+    }
+  }
+
+  function seekLive() {
+    if (v.buffered.length === 0) return;
+    const end = v.buffered.end(v.buffered.length - 1);
+    if (v.currentTime < v.buffered.start(0)) v.currentTime = v.buffered.start(0);
+    if (end - v.currentTime > MAX_LATENCY) v.currentTime = end - 0.05;
+    if (v.paused) v.play().catch(() => {});
+    setPill((v.muted ? '🔇 ' : '🔊 ') + 'live');
+  }
+
+  function connect() {
+    let ws;
+    try { ws = new WebSocket(wsURL()); }
+    catch (e) { setStatus('Bad URL'); return; }
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => { setStatus('Connected. Waiting for video…'); setPill('connected'); };
+
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === 'string') {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch (e) { return; }
+        if (msg.type === 'init' && msg.mime) {
+          mime = msg.mime;
+          resetMSE();
+        }
+        return;
+      }
+      const bytes = new Uint8Array(ev.data);
+      queue.push(bytes);
+      if (!initAppended) initAppended = true;
+      pump();
+    };
+
+    ws.onerror = () => { try { ws.close(); } catch (e) {} };
+    ws.onclose = () => {
+      setStatus('Disconnected. Reconnecting…');
+      setPill('reconnecting…');
+      setTimeout(connect, 1000);
+    };
+  }
+
+  function onUserGesture() {
+    v.muted = false;
+    v.play().catch(() => {});
+    overlay.classList.add('hidden');
+  }
+  document.addEventListener('click', onUserGesture);
+  document.addEventListener('touchstart', onUserGesture, { passive: true });
+  document.addEventListener('keydown', onUserGesture);
+
+  v.addEventListener('playing', () => {
+    setTimeout(() => overlay.classList.add('hidden'), 600);
+  });
+
+  connect();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,115 @@
+import SwiftUI
+
+/// Settings UI bound to `StreamConfig`. Changes are persisted immediately and
+/// take effect the next time streaming is started.
+struct SettingsView: View {
+    @ObservedObject var config: StreamConfig
+
+    @State private var displays: [DisplayInfo] = []
+    @State private var loadError: String?
+
+    var body: some View {
+        Form {
+            Section("Network") {
+                HStack {
+                    Text("Port")
+                    Spacer()
+                    TextField("Port", value: $config.port, format: .number.grouping(.never))
+                        .frame(width: 90)
+                        .multilineTextAlignment(.trailing)
+                }
+                HStack {
+                    Text("Password (optional)")
+                    Spacer()
+                    SecureField("none", text: $config.password)
+                        .frame(width: 160)
+                        .multilineTextAlignment(.trailing)
+                }
+                Text("Leave the password empty for open access on your LAN. With a password, viewers must use the generated URL containing ?token=.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Display") {
+                Picker("Capture", selection: $config.displayID) {
+                    ForEach(displays) { d in
+                        Text(d.label).tag(d.id)
+                    }
+                }
+                if let loadError {
+                    Text(loadError).font(.caption).foregroundStyle(.red)
+                }
+                HStack {
+                    Text("Scale")
+                    Slider(value: Binding(
+                        get: { Double(config.scalePercent) },
+                        set: { config.scalePercent = Int($0) }
+                    ), in: 10...100, step: 5)
+                    Text("\(config.scalePercent)%").frame(width: 44, alignment: .trailing)
+                }
+                Toggle("Show mouse cursor", isOn: $config.showsCursor)
+            }
+
+            Section("Quality") {
+                HStack {
+                    Text("Frame rate")
+                    Spacer()
+                    Picker("", selection: $config.fps) {
+                        ForEach([15, 24, 30, 60], id: \.self) { Text("\($0) fps").tag($0) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 110)
+                }
+                HStack {
+                    Text("Bitrate")
+                    Slider(value: $config.bitrateMbps, in: 1...50, step: 1)
+                    Text(String(format: "%.0f Mbps", config.bitrateMbps))
+                        .frame(width: 70, alignment: .trailing)
+                }
+                Picker("Codec", selection: $config.codec) {
+                    ForEach(VideoCodec.allCases) { Text($0.displayName).tag($0) }
+                }
+            }
+
+            Section("Latency") {
+                HStack {
+                    Text("Segment size")
+                    Slider(value: Binding(
+                        get: { Double(config.segmentIntervalMs) },
+                        set: { config.segmentIntervalMs = Int($0) }
+                    ), in: 100...3000, step: 100)
+                    Text("\(config.segmentIntervalMs) ms").frame(width: 64, alignment: .trailing)
+                }
+                Text("Smaller segments = lower latency, slightly higher overhead. ~300–700 ms is a good balance.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Audio") {
+                Toggle("Capture system audio", isOn: $config.captureAudio)
+                Text("Captures what your Mac is playing (no virtual audio driver needed). Requires macOS 13+.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("Changes apply the next time you start streaming.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .formStyle(.grouped)
+        .frame(width: 460, height: 540)
+        .task { await loadDisplays() }
+    }
+
+    private func loadDisplays() async {
+        do {
+            let result = try await ScreenCaptureManager.availableDisplays()
+            displays = result
+            if !result.contains(where: { $0.id == config.displayID }), let first = result.first {
+                config.displayID = first.id
+            }
+        } catch {
+            loadError = "Could not list displays. Grant Screen Recording permission and reopen settings."
+        }
+    }
+}
