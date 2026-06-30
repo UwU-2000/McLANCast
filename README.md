@@ -59,8 +59,38 @@ menu-bar item **Grant Screen Recording Permission…**, approve it in
 
 In the browser player you get a shortcut bar (also clickable) with keyboard
 shortcuts: `M` mute/unmute, `+` / `-` volume, `R` rotate the video, `F`
-fullscreen. The bar stays visible in windowed mode and auto-hides a couple of
-seconds after you interact in fullscreen.
+fullscreen, and `C` request control. The bar stays visible in windowed mode and
+auto-hides a couple of seconds after you interact in fullscreen.
+
+## Remote control (control the host from a viewer)
+
+A viewer can drive the host Mac's mouse and keyboard:
+
+1. Click **Control** (or press `C`) in the player.
+2. The host shows an Allow/Deny prompt with an expiry (15 min / 1 hour / until
+   streaming stops / always). Approved browsers are remembered and skip the
+   prompt until expiry.
+3. Once granted, mouse moves/clicks/scroll and typing forward to the host;
+   the player's own shortcuts are suspended. A floating toolbar appears with:
+   - **Stop** — exit control (same as pressing `Esc`).
+   - **Keyboard** — summon the device's native keyboard (touch devices).
+   - **On-screen** — toggle an in-browser full-QWERTY keyboard (all platforms,
+     with sticky Shift/Ctrl/Alt/Cmd for shortcuts like Cmd+C).
+   - **Left/Right click** — bottom-corner buttons that click at the cursor.
+
+On a touch device there is no pointer, so drag on the video to move the host
+cursor, then tap the **Left click** / **Right click** corner buttons.
+
+Notes:
+
+- Requires macOS **Accessibility** permission. Use the menu-bar item **Grant
+  Accessibility Permission (for control)…** and enable LANCast in
+  **System Settings → Privacy & Security → Accessibility**.
+- A browser opened on the **same Mac** that's streaming is always view-only
+  (prevents a control feedback loop).
+- Only one viewer controls at a time; others see "another device is in control".
+- It can be disabled entirely in **Settings → Remote control**, which also has
+  **Forget approved controllers**.
 
 ## Settings
 
@@ -70,6 +100,8 @@ seconds after you interact in fullscreen.
 - **Frame rate / Bitrate / Codec** — video quality (H.264 is most compatible).
 - **Latency (segment size)** — the main latency vs. efficiency trade-off.
 - **Capture system audio** — toggle audio.
+- **Allow clients to request control** — master switch for remote control
+  (each request is still approved individually on the host).
 
 Changes apply the next time you start streaming.
 
@@ -89,6 +121,8 @@ Changes apply the next time you start streaming.
 - `Sources/LANCast/Encode/SegmentMuxer.swift` — fMP4 segmenter.
 - `Sources/LANCast/Server/StreamServer.swift` — HTTP + WebSocket server.
 - `Sources/LANCast/Server/PlayerPage.swift` — embedded browser player (HTML/JS).
+- `Sources/LANCast/Input/RemoteInputController.swift` — CGEvent injection for remote control.
+- `Sources/LANCast/Input/ApprovalStore.swift` — persisted control approvals.
 - `Sources/LANCast/App/` — menu-bar app + settings UI.
 - `bundle/` — `Info.plist` + entitlements used by `build_app.sh`.
 
