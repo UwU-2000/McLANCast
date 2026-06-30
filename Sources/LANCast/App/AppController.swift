@@ -3,17 +3,20 @@ import SwiftUI
 import CoreGraphics
 
 /// Wires together capture -> mux -> server and drives the menu-bar UI.
-final class AppController: NSObject, NSApplicationDelegate {
+final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private let config = StreamConfig()
 
     private var capture: ScreenCaptureManager?
     private var muxer: SegmentMuxer?
     private let server = StreamServer()
+    private let input = RemoteInputController()
+    private let approvals = ApprovalStore()
 
     private var isStreaming = false
     private var statusItem: NSStatusItem?
     private var settingsWindow: NSWindow?
+    private weak var viewersMenuItem: NSMenuItem?
 
     // MARK: - App lifecycle
 
@@ -25,7 +28,29 @@ final class AppController: NSObject, NSApplicationDelegate {
             button.image?.isTemplate = true
         }
         statusItem = item
+        wireServerCallbacks()
         rebuildMenu()
+    }
+
+    private func wireServerCallbacks() {
+        server.onViewerCountChanged = { [weak self] count in
+            self?.viewersMenuItem?.title = "Viewers: \(count)"
+        }
+        server.onControlRequest = { [weak self] request in
+            self?.handleControlRequest(request)
+        }
+        server.onInput = { [weak self] event in
+            self?.input.handle(event)
+        }
+        server.onControllerCleared = { [weak self] in
+            self?.input.releaseHeld()
+        }
+        NotificationCenter.default.addObserver(
+            forName: .lanCastForgetControlApprovals, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.approvals.forgetAll()
+            self?.server.revokeControl(reason: "Approvals were cleared on the host.")
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -62,6 +87,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     Task { @MainActor in self?.handleUnexpectedStop(error) }
                 }
 
+                input.displayID = display.id
                 try server.start(config: config)
                 Log.log("Server started on port \(config.port)")
                 try await capture.start(config: config)
@@ -89,6 +115,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             muxer?.finish()
         }
         server.stop()
+        approvals.clearSession()
         isStreaming = false
         rebuildMenu()
     }
@@ -115,6 +142,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func rebuildMenu() {
         let menu = NSMenu()
+        menu.delegate = self
 
         if isStreaming {
             let url = streamURL ?? "No network address found"
@@ -129,6 +157,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             let viewers = NSMenuItem(title: "Viewers: \(server.viewerCount)", action: nil, keyEquivalent: "")
             viewers.isEnabled = false
             menu.addItem(viewers)
+            viewersMenuItem = viewers
 
             menu.addItem(.separator())
 
@@ -159,6 +188,11 @@ final class AppController: NSObject, NSApplicationDelegate {
                               action: #selector(requestPermission), keyEquivalent: "")
         perm.target = self
         menu.addItem(perm)
+
+        let axPerm = NSMenuItem(title: "Grant Accessibility Permission (for control)…",
+                                action: #selector(requestAccessibilityPermission), keyEquivalent: "")
+        axPerm.target = self
+        menu.addItem(axPerm)
 
         menu.addItem(.separator())
 
@@ -196,6 +230,73 @@ final class AppController: NSObject, NSApplicationDelegate {
             alert.informativeText = "LANCast can capture your screen and system audio."
             alert.runModal()
         }
+    }
+
+    @objc private func requestAccessibilityPermission() {
+        if RemoteInputController.hasAccessibility() {
+            let alert = NSAlert()
+            alert.messageText = "Accessibility is already allowed."
+            alert.informativeText = "Approved viewers can control this Mac's mouse and keyboard."
+            alert.runModal()
+        } else {
+            RemoteInputController.requestAccessibility()
+            let alert = NSAlert()
+            alert.messageText = "Grant Accessibility permission"
+            alert.informativeText = "Open System Settings > Privacy & Security > Accessibility and enable LANCast, then control requests can be honored."
+            alert.runModal()
+        }
+    }
+
+    // MARK: - Remote control approval
+
+    private func handleControlRequest(_ request: StreamServer.ControlRequest) {
+        guard RemoteInputController.hasAccessibility() else {
+            server.denyControl(request, state: "denied",
+                               reason: "The host hasn't granted Accessibility permission yet.")
+            RemoteInputController.requestAccessibility()
+            return
+        }
+
+        // Previously approved (and unexpired) clients are auto-granted.
+        if approvals.isApproved(request.clientId) {
+            input.displayID = config.displayID
+            server.grantControl(request)
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Allow remote control?"
+        alert.informativeText = "A viewer at \(request.ip) wants to control this Mac's mouse and keyboard."
+        alert.addButton(withTitle: "Allow")
+        alert.addButton(withTitle: "Deny")
+
+        let expiries = ApprovalStore.Expiry.allCases
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 240, height: 26))
+        popup.addItems(withTitles: expiries.map { $0.label })
+        let wrapper = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 52))
+        let label = NSTextField(labelWithString: "Allow control for:")
+        label.frame = NSRect(x: 0, y: 30, width: 240, height: 18)
+        wrapper.addSubview(label)
+        popup.frame = NSRect(x: 0, y: 0, width: 240, height: 26)
+        wrapper.addSubview(popup)
+        alert.accessoryView = wrapper
+
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            let expiry = expiries[min(popup.indexOfSelectedItem, expiries.count - 1)]
+            approvals.approve(request.clientId, expiry: expiry)
+            input.displayID = config.displayID
+            server.grantControl(request)
+        } else {
+            server.denyControl(request, state: "denied", reason: "The host denied control.")
+        }
+    }
+
+    // MARK: - NSMenuDelegate
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if isStreaming { viewersMenuItem?.title = "Viewers: \(server.viewerCount)" }
     }
 
     @objc private func openSettings() {

@@ -34,6 +34,7 @@ final class StreamConfig: ObservableObject {
         static let captureAudio = "captureAudio"
         static let showsCursor = "showsCursor"
         static let password = "password"
+        static let allowRemoteControl = "allowRemoteControl"
     }
 
     private let defaults = UserDefaults.standard
@@ -68,6 +69,10 @@ final class StreamConfig: ObservableObject {
     /// Optional password. Empty means no auth.
     @Published var password: String { didSet { defaults.set(password, forKey: Keys.password) } }
 
+    /// Master switch: whether LAN clients may request control of the host.
+    /// Each request is still individually approved by the host.
+    @Published var allowRemoteControl: Bool { didSet { defaults.set(allowRemoteControl, forKey: Keys.allowRemoteControl) } }
+
     init() {
         let d = UserDefaults.standard
         port = (d.object(forKey: Keys.port) as? Int) ?? 8080
@@ -80,6 +85,7 @@ final class StreamConfig: ObservableObject {
         captureAudio = (d.object(forKey: Keys.captureAudio) as? Bool) ?? true
         showsCursor = (d.object(forKey: Keys.showsCursor) as? Bool) ?? true
         password = d.string(forKey: Keys.password) ?? ""
+        allowRemoteControl = (d.object(forKey: Keys.allowRemoteControl) as? Bool) ?? true
     }
 
     /// Segment interval as seconds for AVFoundation APIs.

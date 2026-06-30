@@ -20,14 +20,49 @@ final class StreamServer {
     private var httpBuffers: [ObjectIdentifier: Data] = [:]
     private var wsBuffers: [ObjectIdentifier: Data] = [:]
 
+    // Per-connection metadata.
+    private var clientIds: [ObjectIdentifier: String] = [:]
+    private var remoteIPs: [ObjectIdentifier: String] = [:]
+    private var viewOnly: [ObjectIdentifier: Bool] = [:]
+    private var lastPong: [ObjectIdentifier: Date] = [:]
+
+    // Single active controller (only one client controls the host at a time).
+    private var activeControllerOID: ObjectIdentifier?
+    private(set) var activeControllerClientId: String?
+
     private var cachedInitMime: String?
     private var cachedInitSegment: Data?
 
     private var password: String = ""
+    private var controlMasterEnabled = true
+
+    private var heartbeat: DispatchSourceTimer?
 
     private static let wsMagic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    private static let heartbeatInterval: TimeInterval = 5
+    private static let pongTimeout: TimeInterval = 15
 
     private(set) var boundPort: UInt16 = 0
+
+    // MARK: - Callbacks
+
+    /// Fired (on the main queue) whenever the viewer count changes.
+    var onViewerCountChanged: ((Int) -> Void)?
+    /// Fired (on the main queue) when a client asks to control the host. The
+    /// host should respond with `grantControl`/`denyControl`.
+    var onControlRequest: ((ControlRequest) -> Void)?
+    /// Fired (on the server queue) for input from the active controller only.
+    var onInput: ((InputEvent) -> Void)?
+    /// Fired (on the main queue) when the active controller is cleared, so the
+    /// host can release any held buttons.
+    var onControllerCleared: (() -> Void)?
+
+    /// Opaque handle describing a pending control request.
+    struct ControlRequest {
+        let clientId: String
+        let ip: String
+        fileprivate let oid: ObjectIdentifier
+    }
 
     /// Number of currently connected viewers.
     var viewerCount: Int {
@@ -45,6 +80,7 @@ final class StreamServer {
         }
 
         password = config.password
+        controlMasterEnabled = config.allowRemoteControl
 
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
@@ -62,18 +98,53 @@ final class StreamServer {
         }
         listener.start(queue: queue)
         self.listener = listener
+        startHeartbeat()
     }
 
     func stop() {
         queue.sync {
+            heartbeat?.cancel()
+            heartbeat = nil
             for (_, c) in clients { c.cancel() }
             clients.removeAll()
             httpBuffers.removeAll()
             wsBuffers.removeAll()
+            clientIds.removeAll()
+            remoteIPs.removeAll()
+            viewOnly.removeAll()
+            lastPong.removeAll()
+            activeControllerOID = nil
+            activeControllerClientId = nil
             cachedInitMime = nil
             cachedInitSegment = nil
             listener?.cancel()
             listener = nil
+        }
+    }
+
+    // MARK: - Heartbeat (prunes dead viewers so the count stays accurate)
+
+    private func startHeartbeat() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + Self.heartbeatInterval, repeating: Self.heartbeatInterval)
+        timer.setEventHandler { [weak self] in self?.heartbeatTick() }
+        heartbeat = timer
+        timer.resume()
+    }
+
+    private func heartbeatTick() {
+        let now = Date()
+        let snapshot = clients // avoid mutating while iterating
+        for (oid, connection) in snapshot {
+            let last = lastPong[oid] ?? now
+            if now.timeIntervalSince(last) > Self.pongTimeout {
+                Log.log("dropping stale viewer (no pong for \(Int(now.timeIntervalSince(last)))s)")
+                connection.cancel()
+                removeClient(oid)
+            } else {
+                let ping = Self.wsFrame(opcode: 0x9, payload: Data())
+                connection.send(content: ping, completion: .contentProcessed { _ in })
+            }
         }
     }
 
@@ -122,9 +193,25 @@ final class StreamServer {
     }
 
     private func removeClient(_ oid: ObjectIdentifier) {
+        let wasClient = clients[oid] != nil
         clients[oid] = nil
         httpBuffers[oid] = nil
         wsBuffers[oid] = nil
+        clientIds[oid] = nil
+        remoteIPs[oid] = nil
+        viewOnly[oid] = nil
+        lastPong[oid] = nil
+        if oid == activeControllerOID {
+            activeControllerOID = nil
+            activeControllerClientId = nil
+            DispatchQueue.main.async { [weak self] in self?.onControllerCleared?() }
+        }
+        if wasClient { notifyViewerCount() }
+    }
+
+    private func notifyViewerCount() {
+        let count = clients.count
+        DispatchQueue.main.async { [weak self] in self?.onViewerCountChanged?(count) }
     }
 
     private func receiveHTTP(_ connection: NWConnection) {
@@ -226,8 +313,13 @@ final class StreamServer {
             guard let self else { return }
             let oid = ObjectIdentifier(connection)
             self.clients[oid] = connection
+            self.lastPong[oid] = Date()
+            let ip = Self.remoteIP(of: connection)
+            self.remoteIPs[oid] = ip
+            self.viewOnly[oid] = Self.isLocalAddress(ip)
             let haveInit = self.cachedInitMime != nil
-            Log.log("WebSocket client connected (total \(self.clients.count)), cachedInit=\(haveInit)")
+            Log.log("WebSocket client connected (total \(self.clients.count)), ip=\(ip), viewOnly=\(self.viewOnly[oid] ?? false), cachedInit=\(haveInit)")
+            self.notifyViewerCount()
             if let mime = self.cachedInitMime, let seg = self.cachedInitSegment {
                 self.sendInit(to: connection, mime: mime, segment: seg)
             }
@@ -306,9 +398,9 @@ final class StreamServer {
             offset = idx
 
             switch opcode {
-            case 0x1: // text -> client diagnostic
+            case 0x1: // text -> JSON control / diagnostic message
                 if let text = String(bytes: payload, encoding: .utf8) {
-                    Log.log("client: \(text)")
+                    handleClientText(text, connection: connection)
                 }
             case 0x8: // close
                 Log.log("WebSocket client sent close")
@@ -318,12 +410,161 @@ final class StreamServer {
             case 0x9: // ping -> pong
                 let pong = Self.wsFrame(opcode: 0xA, payload: Data(payload))
                 connection.send(content: pong, completion: .contentProcessed { _ in })
+            case 0xA: // pong -> keepalive
+                lastPong[ObjectIdentifier(connection)] = Date()
             default:
                 break
             }
         }
 
         return Data(bytes[offset...])
+    }
+
+    // MARK: - Client control messages
+
+    private func handleClientText(_ text: String, connection: NWConnection) {
+        let oid = ObjectIdentifier(connection)
+        guard let data = text.data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let type = obj["type"] as? String else {
+            return
+        }
+
+        switch type {
+        case "log":
+            if let msg = obj["msg"] as? String { Log.log("client: \(msg)") }
+
+        case "hello":
+            let clientId = (obj["clientId"] as? String) ?? ""
+            clientIds[oid] = clientId
+            sendControlAvailability(to: connection)
+
+        case "control-request":
+            handleControlRequest(oid: oid, connection: connection)
+
+        case "control-release":
+            if oid == activeControllerOID { clearActiveController() }
+
+        case "input":
+            guard oid == activeControllerOID, let event = Self.parseInput(obj) else { return }
+            onInput?(event)
+
+        default:
+            break
+        }
+    }
+
+    private func sendControlAvailability(to connection: NWConnection) {
+        let oid = ObjectIdentifier(connection)
+        if viewOnly[oid] == true {
+            sendJSON(["type": "control", "state": "view-only"], to: connection)
+        } else if !controlMasterEnabled {
+            sendJSON(["type": "control", "state": "unavailable",
+                      "reason": "Remote control is disabled on the host."], to: connection)
+        } else {
+            sendJSON(["type": "control", "state": "available"], to: connection)
+        }
+    }
+
+    private func handleControlRequest(oid: ObjectIdentifier, connection: NWConnection) {
+        if viewOnly[oid] == true {
+            sendJSON(["type": "control", "state": "view-only"], to: connection)
+            return
+        }
+        if !controlMasterEnabled {
+            sendJSON(["type": "control", "state": "unavailable",
+                      "reason": "Remote control is disabled on the host."], to: connection)
+            return
+        }
+        let clientId = clientIds[oid] ?? ""
+        // Single-controller arbitration.
+        if let active = activeControllerClientId, active != clientId {
+            sendJSON(["type": "control", "state": "busy"], to: connection)
+            return
+        }
+        let request = ControlRequest(clientId: clientId, ip: remoteIPs[oid] ?? "", oid: oid)
+        DispatchQueue.main.async { [weak self] in self?.onControlRequest?(request) }
+    }
+
+    private func clearActiveController() {
+        activeControllerOID = nil
+        activeControllerClientId = nil
+        DispatchQueue.main.async { [weak self] in self?.onControllerCleared?() }
+    }
+
+    // MARK: - Control responses (called by the host / AppController)
+
+    func grantControl(_ request: ControlRequest) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            // Revoke a different previous controller.
+            if let prev = self.activeControllerOID, prev != request.oid, let c = self.clients[prev] {
+                self.sendJSON(["type": "control", "state": "revoked",
+                               "reason": "Another device took control."], to: c)
+            }
+            self.activeControllerOID = request.oid
+            self.activeControllerClientId = request.clientId
+            if let c = self.clients[request.oid] {
+                self.sendJSON(["type": "control", "state": "granted"], to: c)
+            }
+        }
+    }
+
+    func denyControl(_ request: ControlRequest, state: String, reason: String?) {
+        queue.async { [weak self] in
+            guard let self, let c = self.clients[request.oid] else { return }
+            var msg: [String: Any] = ["type": "control", "state": state]
+            if let reason { msg["reason"] = reason }
+            self.sendJSON(msg, to: c)
+        }
+    }
+
+    func revokeControl(reason: String) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            if let oid = self.activeControllerOID, let c = self.clients[oid] {
+                self.sendJSON(["type": "control", "state": "revoked", "reason": reason], to: c)
+            }
+            self.activeControllerOID = nil
+            self.activeControllerClientId = nil
+        }
+    }
+
+    private func sendJSON(_ obj: [String: Any], to connection: NWConnection) {
+        guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
+        let frame = Self.wsFrame(opcode: 0x1, payload: data)
+        connection.send(content: frame, completion: .contentProcessed { _ in })
+    }
+
+    private static func parseInput(_ obj: [String: Any]) -> InputEvent? {
+        guard let kind = obj["kind"] as? String else { return nil }
+        func d(_ key: String) -> Double { (obj[key] as? Double) ?? 0 }
+        let x = d("x"), y = d("y")
+        switch kind {
+        case "move":
+            return .move(x: x, y: y)
+        case "down":
+            return .mouseDown(x: x, y: y, button: (obj["button"] as? String) == "right" ? .right : .left)
+        case "up":
+            return .mouseUp(x: x, y: y, button: (obj["button"] as? String) == "right" ? .right : .left)
+        case "scroll":
+            return .scroll(x: x, y: y, dx: d("dx"), dy: d("dy"))
+        case "text":
+            return .text((obj["text"] as? String) ?? "")
+        case "key":
+            let mods = KeyModifiers(
+                shift: (obj["shift"] as? Bool) ?? false,
+                ctrl: (obj["ctrl"] as? Bool) ?? false,
+                alt: (obj["alt"] as? Bool) ?? false,
+                meta: (obj["meta"] as? Bool) ?? false
+            )
+            return .key(down: (obj["down"] as? Bool) ?? false,
+                        code: (obj["code"] as? String) ?? "",
+                        char: obj["char"] as? String,
+                        mods: mods)
+        default:
+            return nil
+        }
     }
 
     // MARK: - HTTP helpers
@@ -387,6 +628,49 @@ final class StreamServer {
     }
 
     // MARK: - Networking info
+
+    /// Extracts the remote peer's IP (without IPv6 zone) from a connection.
+    static func remoteIP(of connection: NWConnection) -> String {
+        guard case let .hostPort(host, _) = connection.endpoint else { return "" }
+        var s = "\(host)"
+        if let pct = s.firstIndex(of: "%") { s = String(s[..<pct]) } // strip %en0 zone
+        return s
+    }
+
+    /// Whether the given IP belongs to this host (loopback or any local
+    /// interface) — used to detect "same device" and block control feedback.
+    static func isLocalAddress(_ ip: String) -> Bool {
+        if ip.isEmpty { return false }
+        if ip == "127.0.0.1" || ip == "::1" || ip == "::ffff:127.0.0.1" { return true }
+        return allLocalAddresses().contains(ip)
+    }
+
+    /// All numeric IPv4/IPv6 addresses assigned to local interfaces.
+    static func allLocalAddresses() -> Set<String> {
+        var result: Set<String> = ["127.0.0.1", "::1"]
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return result }
+        defer { freeifaddrs(ifaddr) }
+
+        var ptr: UnsafeMutablePointer<ifaddrs>? = first
+        while let current = ptr {
+            let interface = current.pointee
+            let family = interface.ifa_addr.pointee.sa_family
+            if family == UInt8(AF_INET) || family == UInt8(AF_INET6) {
+                var addr = interface.ifa_addr.pointee
+                var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(&addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                               &hostname, socklen_t(hostname.count),
+                               nil, 0, NI_NUMERICHOST) == 0 {
+                    var s = String(cString: hostname)
+                    if let pct = s.firstIndex(of: "%") { s = String(s[..<pct]) }
+                    result.insert(s)
+                }
+            }
+            ptr = interface.ifa_next
+        }
+        return result
+    }
 
     /// Returns the primary LAN IPv4 address (en* interface), or nil.
     static func localIPv4Address() -> String? {

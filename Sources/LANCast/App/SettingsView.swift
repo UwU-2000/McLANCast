@@ -1,5 +1,10 @@
 import SwiftUI
 
+extension Notification.Name {
+    /// Posted from settings to forget all stored control approvals.
+    static let lanCastForgetControlApprovals = Notification.Name("LANCastForgetControlApprovals")
+}
+
 /// Settings UI bound to `StreamConfig`. Changes are persisted immediately and
 /// take effect the next time streaming is started.
 struct SettingsView: View {
@@ -90,6 +95,16 @@ struct SettingsView: View {
                 Text("Captures what your Mac is playing (no virtual audio driver needed). Requires macOS 13+.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Remote control") {
+                Toggle("Allow clients to request control", isOn: $config.allowRemoteControl)
+                Text("When enabled, a viewer can ask to control this Mac's mouse and keyboard. Each request must be approved here on the host, and a browser on this same Mac is always view-only. Requires Accessibility permission.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Forget approved controllers") {
+                    NotificationCenter.default.post(name: .lanCastForgetControlApprovals, object: nil)
+                }
             }
 
             Text("Changes apply the next time you start streaming.")
