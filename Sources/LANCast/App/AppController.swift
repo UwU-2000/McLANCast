@@ -12,10 +12,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let server = StreamServer()
     private let input = RemoteInputController()
     private let approvals = ApprovalStore()
+    private let sleepGuard = SleepGuard()
 
     private var isStreaming = false
     private var statusItem: NSStatusItem?
     private var settingsWindow: NSWindow?
+    private var qrWindow: NSWindow?
     private weak var viewersMenuItem: NSMenuItem?
 
     // MARK: - App lifecycle
@@ -102,6 +104,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.muxer = muxer
                 self.capture = capture
                 self.isStreaming = true
+                sleepGuard.begin(reason: "LANCast is streaming the screen")
                 rebuildMenu()
                 Log.log("Streaming started (display \(display.id), \(width)x\(height))")
             } catch {
@@ -123,6 +126,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         server.stop()
         approvals.clearSession()
+        sleepGuard.end()
         isStreaming = false
         rebuildMenu()
     }
@@ -340,7 +344,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             window.title = "LANCast Settings"
             window.isReleasedWhenClosed = false
             window.center()
-            let view = SettingsView(config: config)
+            let view = SettingsView(config: config, approvals: approvals)
             window.contentViewController = NSHostingController(rootView: view)
             settingsWindow = window
         }
