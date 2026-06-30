@@ -57,6 +57,11 @@ menu-bar item **Grant Screen Recording Permission…**, approve it in
 3. On another device on the same network, open that URL in a browser.
 4. Tap/click the page once to unmute audio (browser autoplay policy).
 
+In the browser player you get a shortcut bar (also clickable) with keyboard
+shortcuts: `M` mute/unmute, `+` / `-` volume, `R` rotate the video, `F`
+fullscreen. The bar stays visible in windowed mode and auto-hides a couple of
+seconds after you interact in fullscreen.
+
 ## Settings
 
 - **Port** — server port (default 8080).
@@ -83,9 +88,8 @@ Changes apply the next time you start streaming.
 - `Sources/LANCast/Capture/ScreenCaptureManager.swift` — ScreenCaptureKit.
 - `Sources/LANCast/Encode/SegmentMuxer.swift` — fMP4 segmenter.
 - `Sources/LANCast/Server/StreamServer.swift` — HTTP + WebSocket server.
-- `Sources/LANCast/Server/PlayerPage.swift` — embedded browser player.
+- `Sources/LANCast/Server/PlayerPage.swift` — embedded browser player (HTML/JS).
 - `Sources/LANCast/App/` — menu-bar app + settings UI.
-- `Resources/player.html` — readable reference copy of the player page.
 - `bundle/` — `Info.plist` + entitlements used by `build_app.sh`.
 
 ## License

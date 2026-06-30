@@ -21,7 +21,7 @@ enum PlayerPage {
   video { max-width: 100vw; max-height: 100vh; width: auto; height: auto; background: #000; }
   #overlay {
     position: fixed; inset: 0; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; gap: 14px;
+    align-items: center; justify-content: center; gap: 14px; z-index: 8;
     background: rgba(0,0,0,0.55); text-align: center; padding: 24px;
     transition: opacity .25s ease; cursor: pointer;
   }
@@ -35,25 +35,38 @@ enum PlayerPage {
     border-radius: 999px; padding: 6px 12px; font-size: 12px; opacity: .85;
     backdrop-filter: blur(8px);
   }
-  #controls {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
-    display: flex; align-items: center; gap: 12px;
-    padding: 22px 18px 14px;
-    background: linear-gradient(to top, rgba(0,0,0,0.65), rgba(0,0,0,0));
-    opacity: 0; transform: translateY(8px);
-    transition: opacity .25s ease, transform .25s ease;
+  #shortcuts {
+    position: fixed; left: 50%; bottom: 16px;
+    transform: translateX(-50%) translateY(8px); z-index: 6;
+    display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+    padding: 8px; max-width: 96vw;
+    opacity: 0; transition: opacity .25s ease, transform .25s ease;
     pointer-events: none;
   }
-  #controls.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
-  #controls button {
-    background: none; border: none; color: #fff; cursor: pointer; padding: 6px;
-    border-radius: 8px; display: inline-flex; align-items: center; justify-content: center;
-    transition: background .15s ease;
+  #shortcuts.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: rgba(20,20,22,0.72); color: #eee;
+    border: 1px solid rgba(255,255,255,0.14); border-radius: 999px;
+    padding: 7px 13px 7px 8px; font-size: 13px; cursor: pointer;
+    backdrop-filter: blur(8px);
+    transition: background .15s ease, border-color .15s ease, transform .05s ease;
   }
-  #controls button:hover { background: rgba(255,255,255,0.16); }
-  #controls svg { width: 26px; height: 26px; fill: currentColor; display: block; }
-  #vol { width: 110px; max-width: 30vw; accent-color: #fff; cursor: pointer; }
-  #controls .spacer { flex: 1; }
+  .chip:hover { background: rgba(52,52,58,0.9); border-color: rgba(255,255,255,0.3); }
+  .chip:active { transform: scale(0.95); }
+  .chip kbd {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    min-width: 20px; height: 20px; padding: 0 5px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,0.16); border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.18); color: #fff;
+  }
+  .readout {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 7px 10px; font-size: 13px; min-width: 46px; color: #ddd;
+    background: rgba(20,20,22,0.55); border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.10); backdrop-filter: blur(8px);
+  }
 </style>
 </head>
 <body>
@@ -64,11 +77,13 @@ enum PlayerPage {
     <div id="status">Connecting to stream...</div>
     <div id="hint">Tap / click anywhere to start and unmute audio</div>
   </div>
-  <div id="controls">
-    <button id="muteBtn" title="Mute / Unmute" aria-label="Mute / Unmute"></button>
-    <input id="vol" type="range" min="0" max="1" step="0.05" value="1" title="Volume" aria-label="Volume">
-    <span class="spacer"></span>
-    <button id="fsBtn" title="Fullscreen" aria-label="Fullscreen"></button>
+  <div id="shortcuts" aria-label="Playback shortcuts">
+    <button class="chip" data-act="mute" title="Mute / Unmute (M)"><kbd>M</kbd><span id="muteLabel">Mute</span></button>
+    <button class="chip" data-act="volDown" title="Volume down (-)"><kbd>&minus;</kbd><span>Vol</span></button>
+    <span class="readout" id="volLevel">100%</span>
+    <button class="chip" data-act="volUp" title="Volume up (+)"><kbd>+</kbd><span>Vol</span></button>
+    <button class="chip" data-act="rotate" title="Rotate video (R)"><kbd>R</kbd><span>Rotate</span></button>
+    <button class="chip" data-act="fullscreen" title="Fullscreen (F)"><kbd>F</kbd><span id="fsLabel">Fullscreen</span></button>
   </div>
 
 <script>
@@ -198,7 +213,7 @@ enum PlayerPage {
     } else if (end - v.currentTime > MAX_LATENCY) {
       v.currentTime = end - 0.4;
     }
-    if (v.paused) v.play().catch((e) => { dbg('play() rejected: ' + e); });
+    if (v.paused && started) v.play().catch((e) => { dbg('play() rejected: ' + e); });
     logState('state');
     setPill((v.muted ? 'muted ' : 'live ') + Math.max(0, (end - v.currentTime)).toFixed(1) + 's');
   }
@@ -213,7 +228,7 @@ enum PlayerPage {
     ws.onopen = () => {
       setStatus('Connected. Waiting for video...');
       setPill('connected');
-      dbg('ws open; player=v6-segments; UA=' + navigator.userAgent);
+      dbg('ws open; player=v7-shortcuts; UA=' + navigator.userAgent);
     };
 
     ws.onmessage = (ev) => {
@@ -247,47 +262,40 @@ enum PlayerPage {
     dbg('VIDEO element error code=' + c + ' msg=' + m);
     setStatus('Video error (code ' + c + '). ' + m);
   });
-  v.addEventListener('playing', () => { dbg('video playing'); setTimeout(() => overlay.classList.add('hidden'), 600); });
+  v.addEventListener('playing', () => { dbg('video playing'); setTimeout(() => overlay.classList.add('hidden'), 600); refreshShortcuts(); });
   v.addEventListener('waiting', () => { lastStateLog = 0; logState('waiting'); });
   v.addEventListener('stalled', () => { lastStateLog = 0; logState('stalled'); });
   v.addEventListener('canplay', () => { dbg('video canplay'); });
+  v.addEventListener('loadedmetadata', () => { if (rotation) applyRotation(); });
 
-  // ---- Playback controls (live stream: mute/volume + fullscreen only) ----
-  const controls = document.getElementById('controls');
-  const muteBtn = document.getElementById('muteBtn');
-  const fsBtn = document.getElementById('fsBtn');
-  const vol = document.getElementById('vol');
+  // ---- Controls + keyboard shortcuts (live stream) ----
+  // m = mute/unmute, f = fullscreen, r = rotate video, +/- = volume.
+  const shortcuts = document.getElementById('shortcuts');
+  const muteLabel = document.getElementById('muteLabel');
+  const fsLabel = document.getElementById('fsLabel');
+  const volLevel = document.getElementById('volLevel');
 
-  const ICON = {
-    volume: '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>',
-    muted: '<svg viewBox="0 0 24 24"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0 0 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.94 8.94 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>',
-    enterFs: '<svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>',
-    exitFs: '<svg viewBox="0 0 24 24"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>'
-  };
+  let started = false;
+  let rotation = 0;          // 0 / 90 / 180 / 270 degrees
+  let hideTimer = null;
 
-  function fsActive() { return document.fullscreenElement || document.webkitFullscreenElement; }
+  function fsActive() { return !!(document.fullscreenElement || document.webkitFullscreenElement); }
 
   function updateAudioUI() {
-    muteBtn.innerHTML = (v.muted || v.volume === 0) ? ICON.muted : ICON.volume;
-    vol.value = v.muted ? 0 : v.volume;
+    const level = v.muted ? 0 : v.volume;
+    if (muteLabel) muteLabel.textContent = (v.muted || v.volume === 0) ? 'Unmute' : 'Mute';
+    if (volLevel) volLevel.textContent = Math.round(level * 100) + '%';
   }
-  function updateFsUI() { fsBtn.innerHTML = fsActive() ? ICON.exitFs : ICON.enterFs; }
+  function updateFsUI() { if (fsLabel) fsLabel.textContent = fsActive() ? 'Exit' : 'Fullscreen'; }
 
-  muteBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    v.muted = !v.muted;
-    if (!v.muted && v.volume === 0) v.volume = 0.5;
+  function doMute() { v.muted = !v.muted; if (!v.muted && v.volume === 0) v.volume = 0.5; updateAudioUI(); }
+  function doVolume(delta) {
+    const base = v.muted ? 0 : v.volume;
+    const nv = Math.min(1, Math.max(0, Math.round((base + delta) * 100) / 100));
+    v.volume = nv;
+    v.muted = (nv === 0);
     updateAudioUI();
-  });
-  vol.addEventListener('input', (e) => {
-    e.stopPropagation();
-    const val = parseFloat(vol.value);
-    v.volume = val;
-    v.muted = (val === 0);
-    updateAudioUI();
-  });
-  vol.addEventListener('click', (e) => e.stopPropagation());
-
+  }
   function toggleFullscreen() {
     if (!fsActive()) {
       const el = document.documentElement;
@@ -299,43 +307,98 @@ enum PlayerPage {
       else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
     }
   }
-  fsBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleFullscreen(); });
-  document.addEventListener('fullscreenchange', updateFsUI);
-  document.addEventListener('webkitfullscreenchange', updateFsUI);
+  function doRotate() { rotation = (rotation + 90) % 360; applyRotation(); }
 
-  // Auto-showing control bar.
-  let hideTimer = null;
-  function showControls() {
-    controls.classList.add('show');
+  // Rotate the video and scale it so it still fits the viewport (useful for
+  // viewing a landscape screen on a portrait device in fullscreen).
+  function applyRotation() {
+    if (rotation === 0) { v.style.cssText = ''; return; }
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const ar = (v.videoWidth && v.videoHeight) ? (v.videoWidth / v.videoHeight) : (16 / 9);
+    let boxW, boxH;
+    if (rotation === 90 || rotation === 270) { boxH = Math.min(vw, vh / ar); boxW = ar * boxH; }
+    else { boxW = Math.min(vw, vh * ar); boxH = boxW / ar; }
+    v.style.position = 'fixed';
+    v.style.left = '50%'; v.style.top = '50%';
+    v.style.maxWidth = 'none'; v.style.maxHeight = 'none';
+    v.style.width = boxW + 'px'; v.style.height = boxH + 'px';
+    v.style.background = '#000';
+    v.style.transform = 'translate(-50%, -50%) rotate(' + rotation + 'deg)';
+  }
+
+  // The shortcuts bar is always visible windowed, but auto-hides in fullscreen.
+  function showShortcuts() {
+    shortcuts.classList.add('show');
     clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => controls.classList.remove('show'), 2800);
+    if (fsActive()) hideTimer = setTimeout(() => shortcuts.classList.remove('show'), 2500);
   }
-  ['mousemove', 'pointerdown', 'touchstart', 'keydown'].forEach((ev) =>
-    document.addEventListener(ev, showControls, { passive: true }));
-  controls.addEventListener('mouseenter', () => { clearTimeout(hideTimer); controls.classList.add('show'); });
-  controls.addEventListener('mouseleave', showControls);
-
-  updateAudioUI();
-  updateFsUI();
-
-  // First user gesture: satisfy autoplay policy by unmuting + playing, then stop
-  // intercepting taps so the controls take over.
-  function detachGesture() {
-    document.removeEventListener('click', onUserGesture);
-    document.removeEventListener('touchstart', onUserGesture);
-    document.removeEventListener('keydown', onUserGesture);
+  function refreshShortcuts() {
+    if (fsActive()) { showShortcuts(); }
+    else { shortcuts.classList.add('show'); clearTimeout(hideTimer); }
   }
-  function onUserGesture() {
+
+  function startPlayback() {
+    started = true;
     v.muted = false;
     v.play().catch(() => {});
     overlay.classList.add('hidden');
     updateAudioUI();
-    showControls();
-    detachGesture();
+    detachPointerGesture();
+    refreshShortcuts();
   }
-  document.addEventListener('click', onUserGesture);
-  document.addEventListener('touchstart', onUserGesture, { passive: true });
-  document.addEventListener('keydown', onUserGesture);
+
+  function trigger(act) {
+    // The first interaction just starts playback (autoplay policy); for mute we
+    // stop there since starting already unmutes.
+    if (!started) { startPlayback(); if (act === 'mute') return; }
+    switch (act) {
+      case 'mute': doMute(); break;
+      case 'volUp': doVolume(0.1); break;
+      case 'volDown': doVolume(-0.1); break;
+      case 'rotate': doRotate(); break;
+      case 'fullscreen': toggleFullscreen(); break;
+    }
+    showShortcuts();
+  }
+
+  // Clickable shortcut chips.
+  shortcuts.querySelectorAll('.chip').forEach((btn) => {
+    btn.addEventListener('click', (e) => { e.stopPropagation(); trigger(btn.dataset.act); });
+  });
+
+  // Keyboard shortcuts.
+  const KEYMAP = { 'm': 'mute', 'f': 'fullscreen', 'r': 'rotate', '+': 'volUp', '=': 'volUp', '-': 'volDown', '_': 'volDown' };
+  document.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    let k = e.key;
+    if (k === 'Add') k = '+'; else if (k === 'Subtract') k = '-';
+    const act = KEYMAP[k.toLowerCase()];
+    if (!act) return;
+    e.preventDefault();
+    trigger(act);
+  });
+
+  // Fullscreen + resize handling.
+  function onFsChange() { updateFsUI(); refreshShortcuts(); applyRotation(); }
+  document.addEventListener('fullscreenchange', onFsChange);
+  document.addEventListener('webkitfullscreenchange', onFsChange);
+  window.addEventListener('resize', () => { if (rotation) applyRotation(); });
+
+  // Reveal shortcuts on interaction with the player (key in fullscreen).
+  ['mousemove', 'pointerdown', 'touchstart', 'click'].forEach((ev) =>
+    v.addEventListener(ev, () => { showShortcuts(); }, { passive: true }));
+
+  // First pointer gesture starts playback (browser autoplay policy).
+  function onPointerGesture() { if (!started) startPlayback(); }
+  function detachPointerGesture() {
+    document.removeEventListener('click', onPointerGesture);
+    document.removeEventListener('touchstart', onPointerGesture);
+  }
+  document.addEventListener('click', onPointerGesture);
+  document.addEventListener('touchstart', onPointerGesture, { passive: true });
+
+  updateAudioUI();
+  updateFsUI();
 
   connect();
 })();
