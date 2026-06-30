@@ -38,17 +38,19 @@ enum PlayerPage {
   #shortcuts {
     position: fixed; left: 50%; bottom: 16px;
     transform: translateX(-50%) translateY(8px); z-index: 6;
-    display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
     padding: 8px; max-width: 96vw;
     opacity: 0; transition: opacity .25s ease, transform .25s ease;
     pointer-events: none;
   }
   #shortcuts.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+  #shortcuts .row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
   .chip {
-    display: inline-flex; align-items: center; gap: 7px;
+    display: inline-flex; align-items: center; gap: 8px;
+    height: 38px; box-sizing: border-box;
     background: rgba(20,20,22,0.72); color: #eee;
     border: 1px solid rgba(255,255,255,0.14); border-radius: 999px;
-    padding: 7px 13px 7px 8px; font-size: 13px; cursor: pointer;
+    padding: 0 14px 0 8px; font-size: 13px; line-height: 1; cursor: pointer;
     backdrop-filter: blur(8px);
     transition: background .15s ease, border-color .15s ease, transform .05s ease;
   }
@@ -56,14 +58,15 @@ enum PlayerPage {
   .chip:active { transform: scale(0.95); }
   .chip kbd {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
-    min-width: 20px; height: 20px; padding: 0 5px;
+    min-width: 22px; height: 22px; padding: 0 5px; box-sizing: border-box;
     display: inline-flex; align-items: center; justify-content: center;
     background: rgba(255,255,255,0.16); border-radius: 6px;
     border: 1px solid rgba(255,255,255,0.18); color: #fff;
   }
   .readout {
     display: inline-flex; align-items: center; justify-content: center;
-    padding: 7px 10px; font-size: 13px; min-width: 46px; color: #ddd;
+    height: 38px; box-sizing: border-box;
+    padding: 0 12px; font-size: 13px; line-height: 1; min-width: 48px; color: #ddd;
     background: rgba(20,20,22,0.55); border-radius: 999px;
     border: 1px solid rgba(255,255,255,0.10); backdrop-filter: blur(8px);
   }
@@ -78,12 +81,16 @@ enum PlayerPage {
     <div id="hint">Tap / click anywhere to start and unmute audio</div>
   </div>
   <div id="shortcuts" aria-label="Playback shortcuts">
-    <button class="chip" data-act="mute" title="Mute / Unmute (M)"><kbd>M</kbd><span id="muteLabel">Mute</span></button>
-    <button class="chip" data-act="volDown" title="Volume down (-)"><kbd>&minus;</kbd><span>Vol</span></button>
-    <span class="readout" id="volLevel">100%</span>
-    <button class="chip" data-act="volUp" title="Volume up (+)"><kbd>+</kbd><span>Vol</span></button>
-    <button class="chip" data-act="rotate" title="Rotate video (R)"><kbd>R</kbd><span>Rotate</span></button>
-    <button class="chip" data-act="fullscreen" title="Fullscreen (F)"><kbd>F</kbd><span id="fsLabel">Fullscreen</span></button>
+    <div class="row">
+      <button class="chip" data-act="mute" title="Mute / Unmute (M)"><kbd>M</kbd><span id="muteLabel">Mute</span></button>
+      <button class="chip" data-act="volDown" title="Volume down (-)"><kbd>&minus;</kbd><span>Vol</span></button>
+      <span class="readout" id="volLevel">100%</span>
+      <button class="chip" data-act="volUp" title="Volume up (+)"><kbd>+</kbd><span>Vol</span></button>
+    </div>
+    <div class="row">
+      <button class="chip" data-act="rotate" title="Rotate video (R)"><kbd>R</kbd><span>Rotate</span></button>
+      <button class="chip" data-act="fullscreen" title="Fullscreen (F)"><kbd>F</kbd><span id="fsLabel">Fullscreen</span></button>
+    </div>
   </div>
 
 <script>
@@ -228,7 +235,7 @@ enum PlayerPage {
     ws.onopen = () => {
       setStatus('Connected. Waiting for video...');
       setPill('connected');
-      dbg('ws open; player=v7-shortcuts; UA=' + navigator.userAgent);
+      dbg('ws open; player=v9-shortcuts; UA=' + navigator.userAgent);
     };
 
     ws.onmessage = (ev) => {
@@ -326,15 +333,20 @@ enum PlayerPage {
     v.style.transform = 'translate(-50%, -50%) rotate(' + rotation + 'deg)';
   }
 
-  // The shortcuts bar is always visible windowed, but auto-hides in fullscreen.
+  // The shortcuts bar is always visible windowed, but in fullscreen it only
+  // appears on genuine interaction and then auto-hides after ~2.5s.
   function showShortcuts() {
     shortcuts.classList.add('show');
     clearTimeout(hideTimer);
     if (fsActive()) hideTimer = setTimeout(() => shortcuts.classList.remove('show'), 2500);
   }
+  // Reconcile resting state (no interaction): shown when windowed, hidden in
+  // fullscreen. Used by background events like 'playing'/fullscreenchange so
+  // they never pop the bar up on their own.
   function refreshShortcuts() {
-    if (fsActive()) { showShortcuts(); }
-    else { shortcuts.classList.add('show'); clearTimeout(hideTimer); }
+    clearTimeout(hideTimer);
+    if (fsActive()) shortcuts.classList.remove('show');
+    else shortcuts.classList.add('show');
   }
 
   function startPlayback() {
