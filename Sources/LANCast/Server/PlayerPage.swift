@@ -8,7 +8,7 @@ enum PlayerPage {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <title>LANCast</title>
 <style>
   :root { color-scheme: dark; }
@@ -18,7 +18,7 @@ enum PlayerPage {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     color: #e6e6e6; overflow: hidden;
   }
-  video { max-width: 100vw; max-height: 100vh; width: auto; height: auto; background: #000; }
+  video { max-width: 100%; max-height: 100%; width: auto; height: auto; background: #000; }
   #overlay {
     position: fixed; inset: 0; display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 14px; z-index: 8;
@@ -81,6 +81,89 @@ enum PlayerPage {
   @media (max-width: 340px) {
     .chip span { display: none; }
   }
+  .chip.hidden { display: none; }
+  .chip.active { background: #2e7d32; border-color: #43a047; }
+  #ctrlBanner {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    z-index: 7; max-width: 92vw; text-align: center;
+    background: rgba(20,20,22,0.82); border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 999px; padding: 8px 16px; font-size: 13px; color: #fff;
+    backdrop-filter: blur(8px); opacity: 0; pointer-events: none;
+    transition: opacity .2s ease;
+  }
+  #ctrlBanner.show { opacity: 1; }
+  body.controlling { cursor: crosshair; }
+
+  /* Floating control-mode toolbar (Stop + keyboard toggles). */
+  #ctrlTools {
+    position: fixed; top: 12px; right: 12px; z-index: 9;
+    display: none; gap: 8px;
+  }
+  #ctrlTools.show { display: flex; }
+  .toolbtn {
+    display: inline-flex; align-items: center; gap: 7px; height: 38px;
+    box-sizing: border-box; padding: 0 14px; font-size: 13px; line-height: 1;
+    color: #fff; background: rgba(20,20,22,0.82); cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.16); border-radius: 999px;
+    backdrop-filter: blur(8px);
+    transition: background .15s ease, border-color .15s ease, transform .05s ease;
+  }
+  .toolbtn:hover { background: rgba(52,52,58,0.92); border-color: rgba(255,255,255,0.32); }
+  .toolbtn:active { transform: scale(0.96); }
+  .toolbtn.active { background: #1565c0; border-color: #1e88e5; }
+  .toolbtn.stop { background: #b3261e; border-color: #d8453b; }
+  .toolbtn.stop:hover { background: #c5352c; }
+
+  /* Hidden input used to summon the native soft keyboard on touch devices. */
+  #kbCatcher {
+    position: fixed; bottom: 0; left: 0; width: 1px; height: 1px;
+    opacity: 0; border: 0; padding: 0; margin: 0; z-index: -1;
+    background: transparent; color: transparent; caret-color: transparent;
+  }
+
+  /* In-browser on-screen keyboard. */
+  #osk {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 9;
+    display: none; flex-direction: column; gap: 6px; padding: 8px;
+    background: rgba(12,12,14,0.94); border-top: 1px solid rgba(255,255,255,0.12);
+    backdrop-filter: blur(10px); user-select: none; -webkit-user-select: none;
+  }
+  #osk.show { display: flex; }
+  #osk .oskrow { display: flex; gap: 6px; justify-content: center; }
+  .oskkey {
+    flex: 1 1 0; min-width: 0; height: 42px; max-width: 64px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px; color: #eee; cursor: pointer;
+    background: rgba(60,60,66,0.9); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 8px; box-sizing: border-box; padding: 0 4px;
+    transition: background .1s ease, transform .05s ease;
+  }
+  .oskkey:hover { background: rgba(82,82,90,0.95); }
+  .oskkey:active { transform: scale(0.94); }
+  .oskkey.wide { flex-grow: 1.6; max-width: 110px; }
+  .oskkey.space { flex-grow: 6; max-width: none; }
+  .oskkey.mod.active { background: #1565c0; border-color: #1e88e5; color: #fff; }
+  .oskkey.fn { height: 34px; font-size: 12px; }
+  @media (max-width: 560px) {
+    .oskkey { height: 38px; font-size: 13px; max-width: none; }
+    .oskkey.fn { height: 30px; font-size: 11px; }
+  }
+
+  /* Bottom-corner click buttons (mainly for touch, where there is no pointer).
+     They ride above the on-screen keyboard via --kb-inset (set from JS). */
+  .clickbtn {
+    position: fixed; bottom: calc(18px + var(--kb-inset, 0px)); z-index: 10; display: none;
+    min-width: 96px; height: 44px; padding: 0 16px; border-radius: 10px;
+    align-items: center; justify-content: center; text-align: center;
+    font-size: 13px; font-weight: 600; line-height: 1.15; color: #fff;
+    background: rgba(20,20,22,0.82); border: 1px solid rgba(255,255,255,0.18);
+    backdrop-filter: blur(8px); cursor: pointer;
+    transition: bottom 0.15s ease;
+  }
+  .clickbtn:active { transform: scale(0.94); }
+  #leftClickBtn { left: 16px; }
+  #rightClickBtn { right: 16px; }
+  body.controlling .clickbtn { display: inline-flex; }
 </style>
 </head>
 <body>
@@ -101,8 +184,19 @@ enum PlayerPage {
     <div class="row">
       <button class="chip" data-act="rotate" title="Rotate video (R)"><kbd>R</kbd><span>Rotate</span></button>
       <button class="chip" data-act="fullscreen" title="Fullscreen (F)"><kbd>F</kbd><span id="fsLabel">Fullscreen</span></button>
+      <button class="chip hidden" id="ctrlBtn" data-act="control" title="Control the host (C)"><kbd>C</kbd><span id="ctrlLabel">Control</span></button>
     </div>
   </div>
+  <div id="ctrlBanner"></div>
+  <div id="ctrlTools">
+    <button class="toolbtn" id="sysKbBtn" title="Show device keyboard">Keyboard</button>
+    <button class="toolbtn" id="oskBtn" title="On-screen keyboard">On-screen</button>
+    <button class="toolbtn stop" id="stopCtrlBtn" title="Exit control (Esc)">Stop</button>
+  </div>
+  <input id="kbCatcher" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="text" aria-hidden="true" tabindex="-1">
+  <div id="osk" aria-label="On-screen keyboard"></div>
+  <button class="clickbtn" id="leftClickBtn" title="Left click">Left click</button>
+  <button class="clickbtn" id="rightClickBtn" title="Right click">Right click</button>
 
 <script>
 (function () {
@@ -126,6 +220,23 @@ enum PlayerPage {
   function dbg(msg) {
     try { if (socket && socket.readyState === 1) socket.send(JSON.stringify({ type: 'log', msg: String(msg) })); } catch (e) {}
   }
+  function sendCtl(obj) {
+    try { if (socket && socket.readyState === 1) socket.send(JSON.stringify(obj)); } catch (e) {}
+  }
+  function sendInput(obj) { obj.type = 'input'; sendCtl(obj); }
+
+  // Stable per-browser identity so the host can remember control approvals.
+  const clientId = (function () {
+    try {
+      let id = localStorage.getItem('lancastClientId');
+      if (!id) {
+        id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+           : (String(Date.now()) + '-' + Math.random().toString(16).slice(2));
+        localStorage.setItem('lancastClientId', id);
+      }
+      return id;
+    } catch (e) { return String(Date.now()); }
+  })();
 
   function wsURL() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -246,13 +357,15 @@ enum PlayerPage {
     ws.onopen = () => {
       setStatus('Connected. Waiting for video...');
       setPill('connected');
-      dbg('ws open; player=v10-shortcuts; UA=' + navigator.userAgent);
+      dbg('ws open; player=v16-kb-layout; UA=' + navigator.userAgent);
+      sendCtl({ type: 'hello', clientId: clientId, name: (navigator.platform || 'browser') });
     };
 
     ws.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
         let msg;
         try { msg = JSON.parse(ev.data); } catch (e) { return; }
+        if (msg.type === 'control') { handleControl(msg); return; }
         if (msg.type === 'init' && msg.mime) {
           mime = msg.mime;
           dbg('received init message, mime=' + mime);
@@ -270,6 +383,8 @@ enum PlayerPage {
     ws.onclose = (e) => {
       setStatus('Disconnected. Reconnecting...');
       setPill('reconnecting...');
+      enterControl(false);
+      setControlState('unknown');
       setTimeout(connect, 1000);
     };
   }
@@ -292,10 +407,26 @@ enum PlayerPage {
   const muteLabel = document.getElementById('muteLabel');
   const fsLabel = document.getElementById('fsLabel');
   const volLevel = document.getElementById('volLevel');
+  const ctrlBtn = document.getElementById('ctrlBtn');
+  const ctrlLabel = document.getElementById('ctrlLabel');
+  const ctrlBanner = document.getElementById('ctrlBanner');
+  const ctrlTools = document.getElementById('ctrlTools');
+  const sysKbBtn = document.getElementById('sysKbBtn');
+  const oskBtn = document.getElementById('oskBtn');
+  const stopCtrlBtn = document.getElementById('stopCtrlBtn');
+  const kbCatcher = document.getElementById('kbCatcher');
+  const osk = document.getElementById('osk');
 
   let started = false;
   let rotation = 0;          // 0 / 90 / 180 / 270 degrees
   let hideTimer = null;
+
+  // Remote-control state: unknown | available | view-only | unavailable |
+  // requesting | granted | denied | busy
+  let controlState = 'unknown';
+  let controlActive = false;
+  let lastMoveSent = 0;
+  let lastPos = { x: 0.5, y: 0.5 }; // last forwarded cursor position (for click buttons)
 
   function fsActive() { return !!(document.fullscreenElement || document.webkitFullscreenElement); }
 
@@ -347,6 +478,7 @@ enum PlayerPage {
   // The shortcuts bar is always visible windowed, but in fullscreen it only
   // appears on genuine interaction and then auto-hides after ~2.5s.
   function showShortcuts() {
+    if (controlActive) return; // bar stays hidden while controlling the host
     shortcuts.classList.add('show');
     clearTimeout(hideTimer);
     if (fsActive()) hideTimer = setTimeout(() => shortcuts.classList.remove('show'), 2500);
@@ -356,9 +488,243 @@ enum PlayerPage {
   // they never pop the bar up on their own.
   function refreshShortcuts() {
     clearTimeout(hideTimer);
-    if (fsActive()) shortcuts.classList.remove('show');
+    if (controlActive || fsActive()) shortcuts.classList.remove('show');
     else shortcuts.classList.add('show');
   }
+
+  // ---- Remote control of the host ----
+  function setBanner(text) {
+    if (!ctrlBanner) return;
+    if (text) { ctrlBanner.textContent = text; ctrlBanner.classList.add('show'); }
+    else { ctrlBanner.classList.remove('show'); }
+  }
+
+  function setControlState(state, reason) {
+    controlState = state;
+    // The Control chip is hidden when control isn't possible at all.
+    const hideChip = (state === 'view-only' || state === 'unavailable' || state === 'unknown');
+    if (ctrlBtn) ctrlBtn.classList.toggle('hidden', hideChip);
+    if (ctrlLabel) ctrlLabel.textContent = (state === 'requesting') ? 'Requesting…' : (controlActive ? 'Release' : 'Control');
+    if (ctrlBtn) ctrlBtn.classList.toggle('active', controlActive);
+
+    if (state === 'requesting') setBanner('Requesting control — waiting for host approval…');
+    else if (state === 'denied') setBanner('Control denied' + (reason ? ': ' + reason : ''));
+    else if (state === 'busy') setBanner('Another device is currently in control.');
+    else if (state === 'view-only') setBanner('');
+    else if (state === 'unavailable') setBanner(reason || 'Remote control is disabled on the host.');
+    else if (!controlActive) setBanner('');
+
+    if (state === 'denied' || state === 'busy') {
+      setTimeout(() => { if (!controlActive && (controlState === 'denied' || controlState === 'busy')) { setControlState('available'); } }, 3500);
+    }
+  }
+
+  function handleControl(msg) {
+    switch (msg.state) {
+      case 'granted': enterControl(true); break;
+      case 'revoked': enterControl(false); setControlState('available'); setBanner('Control ended' + (msg.reason ? ': ' + msg.reason : '')); setTimeout(() => { if (!controlActive) setBanner(''); }, 3000); break;
+      case 'denied': enterControl(false); setControlState('denied', msg.reason); break;
+      case 'busy': setControlState('busy'); break;
+      case 'view-only': enterControl(false); setControlState('view-only'); break;
+      case 'unavailable': enterControl(false); setControlState('unavailable', msg.reason); break;
+      case 'available': if (!controlActive) setControlState('available'); break;
+      default: break;
+    }
+  }
+
+  function requestControl() {
+    if (controlState === 'view-only' || controlState === 'unavailable') return;
+    if (controlActive) { releaseControl(); return; }
+    if (!started) startPlayback();
+    sendCtl({ type: 'control-request' });
+    setControlState('requesting');
+  }
+
+  function releaseControl() {
+    sendCtl({ type: 'control-release' });
+    enterControl(false);
+    setControlState('available');
+  }
+
+  function enterControl(on) {
+    controlActive = on;
+    document.body.classList.toggle('controlling', on);
+    if (on) {
+      // Reset rotation so client coordinates map straight to the host display.
+      rotation = 0; applyRotation();
+      shortcuts.classList.remove('show');
+      ctrlTools.classList.add('show');
+      setControlState('granted');
+      setBanner('Controlling this Mac — press Esc or Stop to release');
+    } else {
+      ctrlTools.classList.remove('show');
+      closeKeyboards();
+      refreshShortcuts();
+    }
+  }
+
+  // Normalize a pointer event to [0,1] within the video content box.
+  function norm(e) {
+    const r = v.getBoundingClientRect();
+    const x = r.width > 0 ? (e.clientX - r.left) / r.width : 0;
+    const y = r.height > 0 ? (e.clientY - r.top) / r.height : 0;
+    return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+  }
+  function btnName(e) { return e.button === 2 ? 'right' : 'left'; }
+
+  // ---- Control-mode keyboards (native soft keyboard + on-screen keyboard) ----
+  const oskMods = { shift: false, ctrl: false, alt: false, meta: false };
+  let capsLock = false;
+  let oskBuilt = false;
+  const oskModEls = [];
+  const oskLetterEls = [];
+
+  // Sends a full key press (down then up) to the host with the given modifiers,
+  // falling back to the current sticky modifiers when none are supplied.
+  function sendKeyTap(code, key, extraMods) {
+    const m = extraMods || { shift: oskMods.shift, ctrl: oskMods.ctrl, alt: oskMods.alt, meta: oskMods.meta };
+    const base = { kind: 'key', code: code, char: key, shift: !!m.shift, ctrl: !!m.ctrl, alt: !!m.alt, meta: !!m.meta };
+    sendInput(Object.assign({ down: true }, base));
+    sendInput(Object.assign({ down: false }, base));
+  }
+
+  // [label, code, char, options] — options: mod ('shift'|'ctrl'|'alt'|'meta'|'caps'), cls.
+  const OSK_LAYOUT = [
+    [['Esc','Escape',null,{cls:'fn'}],['F1','F1',null,{cls:'fn'}],['F2','F2',null,{cls:'fn'}],['F3','F3',null,{cls:'fn'}],['F4','F4',null,{cls:'fn'}],['F5','F5',null,{cls:'fn'}],['F6','F6',null,{cls:'fn'}],['F7','F7',null,{cls:'fn'}],['F8','F8',null,{cls:'fn'}],['F9','F9',null,{cls:'fn'}],['F10','F10',null,{cls:'fn'}],['F11','F11',null,{cls:'fn'}],['F12','F12',null,{cls:'fn'}]],
+    [['`','Backquote','`'],['1','Digit1','1'],['2','Digit2','2'],['3','Digit3','3'],['4','Digit4','4'],['5','Digit5','5'],['6','Digit6','6'],['7','Digit7','7'],['8','Digit8','8'],['9','Digit9','9'],['0','Digit0','0'],['-','Minus','-'],['=','Equal','='],['Backspace','Backspace',null,{cls:'wide'}]],
+    [['Tab','Tab',null,{cls:'wide'}],['q','KeyQ','q'],['w','KeyW','w'],['e','KeyE','e'],['r','KeyR','r'],['t','KeyT','t'],['y','KeyY','y'],['u','KeyU','u'],['i','KeyI','i'],['o','KeyO','o'],['p','KeyP','p'],['[','BracketLeft','['],[']','BracketRight',']'],['\\','Backslash','\\']],
+    [['Caps','CapsLock',null,{mod:'caps',cls:'wide'}],['a','KeyA','a'],['s','KeyS','s'],['d','KeyD','d'],['f','KeyF','f'],['g','KeyG','g'],['h','KeyH','h'],['j','KeyJ','j'],['k','KeyK','k'],['l','KeyL','l'],[';','Semicolon',';'],["'",'Quote',"'"],['Enter','Enter',null,{cls:'wide'}]],
+    [['Shift','ShiftLeft',null,{mod:'shift',cls:'wide'}],['z','KeyZ','z'],['x','KeyX','x'],['c','KeyC','c'],['v','KeyV','v'],['b','KeyB','b'],['n','KeyN','n'],['m','KeyM','m'],[',','Comma',','],['.','Period','.'],['/','Slash','/'],['Shift','ShiftRight',null,{mod:'shift',cls:'wide'}]],
+    [['Ctrl','ControlLeft',null,{mod:'ctrl'}],['Alt','AltLeft',null,{mod:'alt'}],['Cmd','MetaLeft',null,{mod:'meta'}],['Space','Space',' ',{cls:'space'}],['Cmd','MetaRight',null,{mod:'meta'}],['Alt','AltRight',null,{mod:'alt'}],['←','ArrowLeft',null],['↑','ArrowUp',null],['↓','ArrowDown',null],['→','ArrowRight',null]]
+  ];
+
+  function buildOSK() {
+    OSK_LAYOUT.forEach((row) => {
+      const rowEl = document.createElement('div');
+      rowEl.className = 'oskrow';
+      row.forEach((def) => {
+        const [label, code, key, opts] = def;
+        const o = opts || {};
+        const btn = document.createElement('button');
+        btn.className = 'oskkey' + (o.cls ? ' ' + o.cls : '') + (o.mod ? ' mod' : '');
+        btn.textContent = label;
+        // mousedown preventDefault keeps focus/selection stable and stops the
+        // press from bubbling to the video as a host click.
+        btn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
+        btn.addEventListener('click', (e) => { e.stopPropagation(); handleOskKey({ code: code, key: key, mod: o.mod }); });
+        if (o.mod) { btn.dataset.mod = o.mod; oskModEls.push(btn); }
+        else if (/^Key[A-Z]$/.test(code)) { btn.dataset.lower = key; oskLetterEls.push(btn); }
+        rowEl.appendChild(btn);
+      });
+      osk.appendChild(rowEl);
+    });
+  }
+
+  function refreshOskUI() {
+    const upper = oskMods.shift || capsLock;
+    oskLetterEls.forEach((el) => { el.textContent = upper ? el.dataset.lower.toUpperCase() : el.dataset.lower; });
+    oskModEls.forEach((el) => {
+      const m = el.dataset.mod;
+      const on = (m === 'caps') ? capsLock : oskMods[m];
+      el.classList.toggle('active', !!on);
+    });
+  }
+
+  function clearStickyMods() {
+    oskMods.shift = oskMods.ctrl = oskMods.alt = oskMods.meta = false;
+    capsLock = false;
+    refreshOskUI();
+  }
+
+  function handleOskKey(def) {
+    if (def.mod) {
+      if (def.mod === 'caps') capsLock = !capsLock;
+      else oskMods[def.mod] = !oskMods[def.mod];
+      refreshOskUI();
+      return;
+    }
+    const isLetter = /^Key[A-Z]$/.test(def.code);
+    const shift = oskMods.shift || (capsLock && isLetter);
+    sendKeyTap(def.code, def.key, { shift: shift, ctrl: oskMods.ctrl, alt: oskMods.alt, meta: oskMods.meta });
+    // One-shot modifiers clear after a normal key (caps lock persists).
+    oskMods.shift = oskMods.ctrl = oskMods.alt = oskMods.meta = false;
+    refreshOskUI();
+  }
+
+  function setOSK(show) {
+    if (show) {
+      if (!oskBuilt) { buildOSK(); oskBuilt = true; refreshOskUI(); }
+      setSysKb(false);            // the two keyboards are mutually exclusive
+      kbCatcher.readOnly = true;  // stop the OS keyboard from appearing while shown
+    } else {
+      kbCatcher.readOnly = false;
+    }
+    osk.classList.toggle('show', show);
+    oskBtn.classList.toggle('active', show);
+    updateKbInset();
+  }
+  function toggleOSK() { setOSK(!osk.classList.contains('show')); }
+
+  function setSysKb(show) {
+    if (show) {
+      setOSK(false);              // hide the web OSK first (mutually exclusive)
+      kbCatcher.readOnly = false;
+      resetCatcher();
+      kbCatcher.focus();
+    } else {
+      kbCatcher.blur();
+    }
+    sysKbBtn.classList.toggle('active', show);
+  }
+  function toggleSysKb() { setSysKb(document.activeElement !== kbCatcher); }
+
+  function closeKeyboards() {
+    setOSK(false);
+    kbCatcher.blur();
+    sysKbBtn.classList.remove('active');
+    clearStickyMods();
+  }
+
+  // Native soft-keyboard capture. Mobile IMEs (e.g. Gboard) compose words and
+  // don't emit reliable keydown/beforeinput per character, so we diff the input
+  // value on every 'input' event (including composition updates) and forward the
+  // delta as Unicode text + Backspace. Special keys come via keydown below.
+  let kbLastVal = '';
+  function resetCatcher() { kbCatcher.value = ''; kbLastVal = ''; }
+
+  kbCatcher.addEventListener('input', () => {
+    if (!controlActive) { resetCatcher(); return; }
+    const val = kbCatcher.value;
+    let i = 0;
+    const minLen = Math.min(val.length, kbLastVal.length);
+    while (i < minLen && val.charCodeAt(i) === kbLastVal.charCodeAt(i)) i++;
+    const deletes = kbLastVal.length - i;
+    const inserts = val.slice(i);
+    for (let d = 0; d < deletes; d++) sendKeyTap('Backspace', 'Backspace', {});
+    if (inserts) sendInput({ kind: 'text', text: inserts });
+    kbLastVal = val;
+    if (val.length > 256) resetCatcher(); // keep the buffer bounded
+  });
+
+  // Non-printable keys that won't show up in the value diff.
+  kbCatcher.addEventListener('keydown', (e) => {
+    if (!controlActive) return;
+    const SPECIAL = { 'Enter': 'Enter', 'Tab': 'Tab', 'ArrowUp': 'ArrowUp', 'ArrowDown': 'ArrowDown', 'ArrowLeft': 'ArrowLeft', 'ArrowRight': 'ArrowRight', 'Escape': 'Escape' };
+    const code = SPECIAL[e.key];
+    if (!code) return; // printable handled by the input-diff above
+    e.preventDefault();
+    if (e.key === 'Escape') { releaseControl(); return; }
+    sendKeyTap(code, e.key, { shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey });
+  });
+
+  kbCatcher.addEventListener('blur', () => { sysKbBtn.classList.remove('active'); resetCatcher(); });
+
+  // Toolbar buttons.
+  ctrlTools.addEventListener('mousedown', (e) => e.stopPropagation());
+  sysKbBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleSysKb(); });
+  oskBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  oskBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleOSK(); });
+  stopCtrlBtn.addEventListener('click', (e) => { e.stopPropagation(); releaseControl(); });
 
   function startPlayback() {
     started = true;
@@ -380,6 +746,7 @@ enum PlayerPage {
       case 'volDown': doVolume(-0.1); break;
       case 'rotate': doRotate(); break;
       case 'fullscreen': toggleFullscreen(); break;
+      case 'control': requestControl(); break;
     }
     showShortcuts();
   }
@@ -389,9 +756,10 @@ enum PlayerPage {
     btn.addEventListener('click', (e) => { e.stopPropagation(); trigger(btn.dataset.act); });
   });
 
-  // Keyboard shortcuts.
-  const KEYMAP = { 'm': 'mute', 'f': 'fullscreen', 'r': 'rotate', '+': 'volUp', '=': 'volUp', '-': 'volDown', '_': 'volDown' };
+  // Keyboard shortcuts (disabled while controlling the host).
+  const KEYMAP = { 'm': 'mute', 'f': 'fullscreen', 'r': 'rotate', 'c': 'control', '+': 'volUp', '=': 'volUp', '-': 'volDown', '_': 'volDown' };
   document.addEventListener('keydown', (e) => {
+    if (controlActive) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     let k = e.key;
     if (k === 'Add') k = '+'; else if (k === 'Subtract') k = '-';
@@ -410,6 +778,95 @@ enum PlayerPage {
   // Reveal shortcuts on interaction with the player (key in fullscreen).
   ['mousemove', 'pointerdown', 'touchstart', 'click'].forEach((ev) =>
     v.addEventListener(ev, () => { showShortcuts(); }, { passive: true }));
+
+  // Forward input to the host while controlling. Coordinates are normalized to
+  // the video content box; rotation is reset to 0 on entering control mode.
+  v.addEventListener('mousemove', (e) => {
+    if (!controlActive) return;
+    const now = performance.now();
+    if (now - lastMoveSent < 16) return; // ~60 Hz cap
+    lastMoveSent = now;
+    const n = norm(e); lastPos = n; sendInput({ kind: 'move', x: n.x, y: n.y });
+  });
+  v.addEventListener('mousedown', (e) => {
+    if (!controlActive) return;
+    e.preventDefault();
+    const n = norm(e); sendInput({ kind: 'down', x: n.x, y: n.y, button: btnName(e) });
+  });
+  window.addEventListener('mouseup', (e) => {
+    if (!controlActive) return;
+    e.preventDefault();
+    const n = norm(e); sendInput({ kind: 'up', x: n.x, y: n.y, button: btnName(e) });
+  });
+  v.addEventListener('contextmenu', (e) => { if (controlActive) e.preventDefault(); });
+  v.addEventListener('wheel', (e) => {
+    if (!controlActive) return;
+    e.preventDefault();
+    const n = norm(e); sendInput({ kind: 'scroll', x: n.x, y: n.y, dx: e.deltaX, dy: e.deltaY });
+  }, { passive: false });
+  document.addEventListener('keydown', (e) => {
+    if (!controlActive) return;
+    // Let the native soft keyboard's input/beforeinput path handle the catcher.
+    if (e.target === kbCatcher || e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); releaseControl(); return; }
+    e.preventDefault(); e.stopPropagation();
+    sendInput({ kind: 'key', down: true, code: e.code, char: e.key, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey });
+  }, true);
+  document.addEventListener('keyup', (e) => {
+    if (!controlActive) return;
+    if (e.target === kbCatcher || e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Escape') return;
+    e.preventDefault(); e.stopPropagation();
+    sendInput({ kind: 'key', down: false, code: e.code, char: e.key, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey });
+  }, true);
+
+  // Touch: drag on the video to move the host cursor (there is no pointer on
+  // touch), then use the corner click buttons to click at that position.
+  function touchNorm(t) { return norm({ clientX: t.clientX, clientY: t.clientY }); }
+  v.addEventListener('touchstart', (e) => {
+    if (!controlActive || !e.touches.length) return;
+    e.preventDefault();
+    const n = touchNorm(e.touches[0]); lastPos = n;
+    sendInput({ kind: 'move', x: n.x, y: n.y });
+  }, { passive: false });
+  v.addEventListener('touchmove', (e) => {
+    if (!controlActive || !e.touches.length) return;
+    e.preventDefault();
+    const now = performance.now();
+    if (now - lastMoveSent < 16) return;
+    lastMoveSent = now;
+    const n = touchNorm(e.touches[0]); lastPos = n;
+    sendInput({ kind: 'move', x: n.x, y: n.y });
+  }, { passive: false });
+
+  // Corner click buttons: click at the last cursor position.
+  function sendClick(button) {
+    sendInput({ kind: 'down', x: lastPos.x, y: lastPos.y, button: button });
+    sendInput({ kind: 'up', x: lastPos.x, y: lastPos.y, button: button });
+  }
+  const leftClickBtn = document.getElementById('leftClickBtn');
+  const rightClickBtn = document.getElementById('rightClickBtn');
+  [leftClickBtn, rightClickBtn].forEach((b) => {
+    b.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
+    b.addEventListener('touchstart', (e) => { e.stopPropagation(); }, { passive: true });
+  });
+  leftClickBtn.addEventListener('click', (e) => { e.stopPropagation(); sendClick('left'); });
+  rightClickBtn.addEventListener('click', (e) => { e.stopPropagation(); sendClick('right'); });
+
+  // Lift the corner buttons above whatever keyboard is up. For the OS keyboard
+  // the visual viewport shrinks; for our in-page web OSK we use its own height.
+  function updateKbInset() {
+    const vv = window.visualViewport;
+    let inset = 0;
+    if (vv) inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    if (osk.classList.contains('show')) inset = Math.max(inset, osk.offsetHeight);
+    document.documentElement.style.setProperty('--kb-inset', inset + 'px');
+  }
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', updateKbInset);
+    window.visualViewport.addEventListener('scroll', updateKbInset);
+  }
+  updateKbInset();
 
   // First pointer gesture starts playback (browser autoplay policy).
   function onPointerGesture() { if (!started) startPlayback(); }
